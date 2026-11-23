@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Closed Caption Capture – Scene Collection Converter</title>
+<style>
+	:root {
+		--bg: #74FFBD;
+		--ink: #3f29a4;
+	}
+	* { box-sizing: border-box; }
+	html, body {
+		margin: 0;
+		background: var(--bg);
+		color: var(--ink);
+		font-family: Helvetica, Arial, sans-serif;
+		line-height: 1.45;
+	}
+	main {
+		max-width: 920px;
+		margin: 0 auto;
+		padding: 40px 24px 64px;
+	}
+	h1 { font-size: 2rem; margin: 0 0 8px; }
+	h2 { font-size: 1.25rem; margin: 32px 0 8px; }
+	p, li { font-size: 1rem; }
+	code {
+		font-family: Consolas, "Courier New", monospace;
+		background: rgba(63, 41, 164, 0.08);
+		padding: 1px 5px;
+		border-radius: 4px;
+		word-break: break-all;
+	}
+	ol { padding-left: 22px; }
+	#drop {
+		display: block;
+		margin-top: 16px;
+		border: 2px dashed var(--ink);
+		border-radius: 12px;
+		padding: 36px 20px;
+		text-align: center;
+		cursor: pointer;
+		transition: background 0.15s;
+	}
+	#drop.over { background: rgba(63, 41, 164, 0.10); }
+	#drop strong { font-size: 1.1rem; }
+	#file { display: none; }
+	button {
+		font-family: inherit;
+		font-size: 0.95rem;
+		font-weight: bold;
+		color: var(--bg);
+		background: var(--ink);
+		border: 2px solid var(--ink);
+		border-radius: 8px;
+		padding: 7px 14px;
+		cursor: pointer;
+	}
+	button.secondary { color: var(--ink); background: transparent; }
+	button:disabled { opacity: 0.45; cursor: default; }
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		margin-top: 12px;
+	}
+	th, td {
+		text-align: left;
+		vertical-align: top;
+		padding: 10px 8px;
+		border-bottom: 1px solid rgba(63, 41, 164, 0.35);
+	}
+	th { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
+	td.small { font-size: 0.9rem; }
+	.badge {
+		display: inline-block;
+		font-size: 0.8rem;
+		font-weight: bold;
+		border: 1.5px solid var(--ink);
+		border-radius: 999px;
+		padding: 1px 9px;
+		white-space: nowrap;
+	}
+	.badge.cc { background: var(--ink); color: var(--bg); }
+	#status {
+		margin-top: 16px;
+		padding: 12px 14px;
+		border-radius: 8px;
+		border: 2px solid var(--ink);
+		display: none;
+	}
+	#status.show { display: block; }
+	#status.error { border-style: dashed; }
+	#results { display: none; }
+	#results.show { display: block; }
+	.actions { margin-top: 20px; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+	footer { margin-top: 48px; font-size: 0.85rem; opacity: 0.8; }
+</style>
+</head>
+<body>
+<main>
+	<h1>Scene Collection Converter</h1>
+	<p>
+		Switch an existing <strong>Video Capture Device</strong> source to
+		<strong>Video Capture Device (with Closed Captions)</strong>, keeping its name,
+		settings, filters, audio settings, hotkeys and every scene it appears in.
+		Anything that refers to the source (Stream Deck buttons, Streamer.bot actions,
+		other plugins) keeps working, because the source itself stays the same &mdash;
+		only its type changes. You can switch it back the same way.
+	</p>
+	<p>
+		Everything happens in this browser window. Your file is never uploaded anywhere.
+	</p>
+
+	<h2>Before you start</h2>
+	<ol>
+		<li>Install the Closed Caption Capture plugin.</li>
+		<li><strong>Close OBS completely.</strong> OBS saves the scene collection when it exits, which would undo the change.</li>
+		<li>Open <code>%APPDATA%\obs-studio\basic\scenes</code> (paste it into File Explorer&rsquo;s address bar).
+			Each scene collection is a <code>.json</code> file named after it.</li>
+		<li>Copy that file somewhere safe (for example, your Desktop) as a backup.
+			Don&rsquo;t keep the backup in the same folder: OBS lists every <code>.json</code> file there as a scene collection.</li>
+	</ol>
+
+	<label id="drop" for="file">
+		<strong>Drop your scene collection (.json) here</strong><br>
+		or click to choose it
+	</label>
+	<input type="file" id="file" accept=".json,application/json">
+
+	<div id="status"></div>
+
+	<section id="results">
+		<h2 id="collectionTitle">Video capture sources</h2>
+		<p class="small">
+			Only one source can use a capture device at a time. If several sources use the same device,
+			turn on <em>Deactivate when not showing</em> in their properties so they don&rsquo;t compete for it.
+		</p>
+		<table>
+			<thead>
+				<tr><th>Source</th><th>Device</th><th>Used in</th><th>Type</th><th></th></tr>
+			</thead>
+			<tbody id="rows"></tbody>
+		</table>
+
+		<div class="actions">
+			<button id="download" disabled>Download converted file</button>
+			<span id="pending"></span>
+		</div>
+
+		<h2>After downloading</h2>
+		<ol>
+			<li>Rename the downloaded file to exactly match the original (your browser may have added something like <code>(1)</code>).</li>
+			<li>Put it in <code>%APPDATA%\obs-studio\basic\scenes</code>, replacing the original.</li>
+			<li>Start OBS and open the source&rsquo;s properties to set up its <em>Closed Captions</em> section.</li>
+		</ol>
+		<p>To undo, close OBS and put your backup copy back.</p>
+	</section>
+
+	<footer>
+		Part of Closed Caption Capture for OBS. Changes exactly two values on each source you convert
+		(<code>id</code> and <code>versioned_id</code>) and checks the result before offering it for download.
+	</footer>
+</main>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------------ */
+/* Core logic (no DOM)                                                      */
+
+const PLAIN_ID = "dshow_input";
+const CC_ID = "dshow_input_closed_captions";
+
+/* List the video capture sources in a parsed scene collection. */
+function findCaptureSources(collection) {
+	const sources = Array.isArray(collection.sources) ? collection.sources : [];
+	const containers = sources.concat(Array.isArray(collection.groups) ? collection.groups : []);
+
+	const result = [];
+	sources.forEach((src, index) => {
+		if (src.id !== PLAIN_ID && src.id !== CC_ID)
+			return;
+
+		const settings = src.settings || {};
+		const deviceId = settings.video_device_id || settings.last_video_device_id || "";
+		const device = deviceId.split(":")[0] || "(no device selected)";
+
+		const usedIn = [];
+		for (const c of containers) {
+			if (c.id !== "scene" && c.id !== "group")
+				continue;
+			const items = (c.settings && c.settings.items) || [];
+			const uses = items.some(it =>
+				(src.uuid && it.source_uuid === src.uuid) || it.name === src.name);
+			if (uses)
+				usedIn.push(c.name);
+		}
+
+		result.push({
+			index,
+			name: src.name,
+			uuid: src.uuid || null,
+			device,
+			usedIn,
+			hasCaptions: src.id === CC_ID,
+			filters: Array.isArray(src.filters) ? src.filters.length : 0,
+		});
+	});
+	return result;
+}
+
+function escapeRegExp(s) {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/* Change one source's type by editing just its two type values in the file
+ * text, so nothing else in the file (formatting, numbers, ordering) changes.
+ * Returns the new text, or throws. */
+function convertSourceText(text, source, toCaptions) {
+	const from = toCaptions ? PLAIN_ID : CC_ID;
+	const to = toCaptions ? CC_ID : PLAIN_ID;
+
+	/* Find where this source's own entry starts: its "uuid" key (scene
+	 * items use "source_uuid", which doesn't match), or failing that its
+	 * "name" key. */
+	const anchors = [];
+	if (source.uuid)
+		anchors.push(new RegExp('"uuid"\\s*:\\s*"' + escapeRegExp(source.uuid) + '"', "g"));
+	anchors.push(new RegExp('"name"\\s*:\\s*' + escapeRegExp(JSON.stringify(source.name)), "g"));
+
+	for (const anchor of anchors) {
+		const matches = [];
+		let m;
+		while ((m = anchor.exec(text)) !== null) {
+			/* The type values follow within the same entry, before its
+			 * "settings" and before any other entry's "name". */
+			const start = m.index;
+			const settingsAt = text.indexOf('"settings"', start);
+			if (settingsAt < 0)
+				continue;
+			const head = text.slice(start, settingsAt);
+			const otherName = head.slice(m[0].length).search(/"name"\s*:/);
+			if (otherName >= 0)
+				continue;
+
+			const idRe = new RegExp('("id"\\s*:\\s*)"' + from + '"');
+			const vidRe = new RegExp('("versioned_id"\\s*:\\s*)"' + from + '"');
+			if (!idRe.test(head))
+				continue;
+			matches.push({ start, end: settingsAt, idRe, vidRe });
+		}
+
+		if (matches.length === 1) {
+			const { start, end, idRe, vidRe } = matches[0];
+			const head = text.slice(start, end)
+				.replace(idRe, '$1"' + to + '"')
+				.replace(vidRe, '$1"' + to + '"');
+			return text.slice(0, start) + head + text.slice(end);
+		}
+	}
+
+	throw new Error('Couldn’t find the entry for “' + source.name + '” in the file.');
+}
+
+/* Compare two parsed collections; returns a list of differences. */
+function diffCollections(a, b) {
+	const diffs = [];
+	const walk = (x, y, path) => {
+		if (diffs.length > 20)
+			return;
+		if (x === y)
+			return;
+		if (typeof x !== typeof y || x === null || y === null || typeof x !== "object") {
+			diffs.push(path);
+			return;
+		}
+		if (Array.isArray(x) !== Array.isArray(y)) {
+			diffs.push(path);
+			return;
+		}
+		if (Array.isArray(x)) {
+			if (x.length !== y.length) {
+				diffs.push(path);
+				return;
+			}
+			for (let i = 0; i < x.length; i++)
+				walk(x[i], y[i], path + "[" + i + "]");
+			return;
+		}
+		const keys = new Set(Object.keys(x).concat(Object.keys(y)));
+		for (const k of keys)
+			walk(x[k], y[k], path + "." + k);
+	};
+	walk(a, b, "");
+	return diffs;
+}
+
+/* Convert and verify: only sources[index].id and .versioned_id may change. */
+function convertAndVerify(text, parsed, source, toCaptions) {
+	const newText = convertSourceText(text, source, toCaptions);
+
+	let newParsed;
+	try {
+		newParsed = JSON.parse(newText);
+	} catch (e) {
+		throw new Error("The edited file would not be valid. Nothing was changed.");
+	}
+
+	const want = toCaptions ? CC_ID : PLAIN_ID;
+	const diffs = diffCollections(parsed, newParsed);
+	const expected = [".sources[" + source.index + "].id", ".sources[" + source.index + "].versioned_id"];
+	const ok = newParsed.sources[source.index].id === want &&
+		diffs.every(d => expected.includes(d)) &&
+		diffs.includes(expected[0]);
+
+	if (!ok)
+		throw new Error("Safety check failed: the edit would have changed more than this source’s type. Nothing was changed.");
+
+	return { text: newText, parsed: newParsed };
+}
+
+if (typeof module !== "undefined")
+	module.exports = { findCaptureSources, convertSourceText, convertAndVerify, diffCollections };
+
+/* ------------------------------------------------------------------------ */
+/* Page                                                                      */
+
+if (typeof document !== "undefined") {
+	const drop = document.getElementById("drop");
+	const fileInput = document.getElementById("file");
+	const statusBox = document.getElementById("status");
+	const results = document.getElementById("results");
+	const rows = document.getElementById("rows");
+	const downloadBtn = document.getElementById("download");
+	const pending = document.getElementById("pending");
+	const title = document.getElementById("collectionTitle");
+
+	const state = {
+		fileName: "",
+		bom: false,
+		text: "",
+		parsed: null,
+		changes: 0,
+	};
+
+	function showStatus(message, isError) {
+		statusBox.textContent = message;
+		statusBox.className = "show" + (isError ? " error" : "");
+	}
+
+	function render() {
+		const sources = findCaptureSources(state.parsed);
+		rows.textContent = "";
+
+		if (!sources.length) {
+			const tr = rows.insertRow();
+			const td = tr.insertCell();
+			td.colSpan = 5;
+			td.textContent = "This scene collection has no Video Capture Device sources.";
+		}
+
+		for (const src of sources) {
+			const tr = rows.insertRow();
+
+			const name = tr.insertCell();
+			const strong = document.createElement("strong");
+			strong.textContent = src.name;
+			name.appendChild(strong);
+			if (src.filters) {
+				name.appendChild(document.createElement("br"));
+				const f = document.createElement("span");
+				f.className = "small";
+				f.textContent = src.filters + (src.filters === 1 ? " filter" : " filters");
+				name.appendChild(f);
+			}
+
+			const dev = tr.insertCell();
+			dev.className = "small";
+			dev.textContent = src.device;
+
+			const used = tr.insertCell();
+			used.className = "small";
+			used.textContent = src.usedIn.length ? src.usedIn.join(", ") : "(not in any scene)";
+
+			const type = tr.insertCell();
+			const badge = document.createElement("span");
+			badge.className = "badge" + (src.hasCaptions ? " cc" : "");
+			badge.textContent = src.hasCaptions ? "With closed captions" : "Video Capture Device";
+			type.appendChild(badge);
+
+			const act = tr.insertCell();
+			const btn = document.createElement("button");
+			btn.textContent = src.hasCaptions ? "Convert back" : "Convert";
+			if (src.hasCaptions)
+				btn.className = "secondary";
+			btn.addEventListener("click", () => convert(src, !src.hasCaptions, btn));
+			act.appendChild(btn);
+		}
+
+		downloadBtn.disabled = state.changes === 0;
+		pending.textContent = state.changes
+			? state.changes + (state.changes === 1 ? " change ready." : " changes ready.")
+			: "";
+	}
+
+	function convert(src, toCaptions, btn) {
+		btn.disabled = true;
+		btn.textContent = "Checking…";
+		/* let the button repaint before the (large) check runs */
+		setTimeout(() => {
+			try {
+				const out = convertAndVerify(state.text, state.parsed, src, toCaptions);
+				state.text = out.text;
+				state.parsed = out.parsed;
+				state.changes++;
+				showStatus("“" + src.name + "” " +
+					(toCaptions ? "will become a Video Capture Device (with Closed Captions)."
+						    : "will become a regular Video Capture Device again.") +
+					" Nothing else in the file was changed.", false);
+			} catch (e) {
+				showStatus(e.message, true);
+			}
+			render();
+		}, 30);
+	}
+
+	function load(file) {
+		if (!file)
+			return;
+		showStatus("Reading " + file.name + "…", false);
+		results.className = "";
+
+		const reader = new FileReader();
+		reader.onload = () => {
+			const bytes = new Uint8Array(reader.result);
+			state.bom = bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF;
+			state.text = new TextDecoder("utf-8").decode(bytes);
+			state.fileName = file.name;
+			state.changes = 0;
+			try {
+				state.parsed = JSON.parse(state.text);
+				if (!Array.isArray(state.parsed.sources))
+					throw new Error();
+			} catch (e) {
+				showStatus("That doesn’t look like an OBS scene collection. Choose the .json file from %APPDATA%\\obs-studio\\basic\\scenes.", true);
+				return;
+			}
+			title.textContent = "Video capture sources in “" + (state.parsed.name || file.name) + "”";
+			showStatus("Loaded " + file.name + ". Choose a source to convert.", false);
+			results.className = "show";
+			render();
+		};
+		reader.onerror = () => showStatus("Couldn’t read that file.", true);
+		reader.readAsArrayBuffer(file);
+	}
+
+	downloadBtn.addEventListener("click", () => {
+		const parts = state.bom ? [new Uint8Array([0xEF, 0xBB, 0xBF]), state.text] : [state.text];
+		const blob = new Blob(parts, { type: "application/json" });
+		const a = document.createElement("a");
+		a.href = URL.createObjectURL(blob);
+		a.download = state.fileName;
+		document.body.appendChild(a);
+		a.click();
+		setTimeout(() => {
+			URL.revokeObjectURL(a.href);
+			a.remove();
+		}, 1000);
+	});
+
+	fileInput.addEventListener("change", () => load(fileInput.files[0]));
+	drop.addEventListener("dragover", e => {
+		e.preventDefault();
+		drop.classList.add("over");
+	});
+	drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+	drop.addEventListener("drop", e => {
+		e.preventDefault();
+		drop.classList.remove("over");
+		load(e.dataTransfer.files[0]);
+	});
+}
+</script>
+</body>
+</html>
