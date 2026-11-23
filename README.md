@@ -38,7 +38,7 @@ In addition to the standard Video Source options, the **Video Capture Device (wi
 - **Clear captions after…**: clears the text if no caption data arrives for this long.
 - **Write captions to text file**: on/off.
 - **File**: text file to write captions in.
-- **Text file contents**: *Overwrite* or *Append*. Overwrite replaces the entire document with only the text that is currently being shown on-screen, and empties it when there is none. Append writes each new line to the bottom row of the text file, which can be useful for archival purposes. If you are displaying a text file in OBS with Append mode, I recommend enabling ‘Chatlog Mode’ to set how many of the most recent lines to show.
+- **Text file contents**: *Overwrite* or *Append*. Overwrite replaces the entire document with only the text that is currently being shown on-screen, and empties it when there is none. Append writes each new line to the bottom row of the text file, which can be useful for archival purposes. If you are displaying a text file in OBS with Append mode, I recommend enabling ‘Chatlog Mode’ in the Text Source Properties window to set how many of the most recent lines to show.
 - **Troubleshooting**: keeps more detailed logs for troubleshooting purposes.
 
 ## Closed Captions?
