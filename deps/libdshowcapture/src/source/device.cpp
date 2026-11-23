@@ -268,10 +268,9 @@ void HDevice::ConnectCaptionPin()
 		return;
 	}
 
-	/* The CC pin delivers one tiny sample per frame.  With the driver's
-	 * default (very small) number of buffers, samples are dropped whenever
-	 * a buffer isn't handed back in time, which loses caption letters.
-	 * Ask for plenty of buffers. */
+	/* The CC pin delivers one tiny sample per frame.  Ask for plenty of
+	 * buffers so that a brief delay in processing never makes the driver
+	 * drop one (each dropped sample loses two caption characters). */
 	ComQIPtr<IAMBufferNegotiation> neg(ccPin);
 	if (neg) {
 		ALLOCATOR_PROPERTIES props;

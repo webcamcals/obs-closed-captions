@@ -67,6 +67,7 @@ using namespace DShow;
 #define CC_INPUT          "cc_input"
 #define CC_FILE           "cc_file"
 #define CC_FILE_MODE      "cc_file_mode"
+#define CC_FILE_ENABLE    "cc_file_enable"
 #define CC_TEXT_SOURCE    "cc_text_source"
 #define CC_CLEAR_SECONDS  "cc_clear_seconds"
 #define CC_LOG_RAW        "cc_log_raw"
@@ -96,6 +97,7 @@ using namespace DShow;
 #define TEXT_CC_INPUT_VBI   obs_module_text("Captions.Input.Vbi")
 #define TEXT_CC_INPUT_CC    obs_module_text("Captions.Input.CcPin")
 #define TEXT_CC_FILE        obs_module_text("Captions.File")
+#define TEXT_CC_FILE_PATH   obs_module_text("Captions.FilePath")
 #define TEXT_CC_FILE_MODE   obs_module_text("Captions.FileMode")
 #define TEXT_CC_TEXT_SOURCE obs_module_text("Captions.TextSource")
 #define TEXT_CC_NONE        obs_module_text("Captions.TextSource.None")
@@ -1117,7 +1119,8 @@ void DShowInput::ConfigureCaptions(obs_data_t *settings)
 	CaptionSettings cc;
 	cc.enabled = obs_data_get_bool(settings, CC_ENABLE);
 	cc.channel = (int)obs_data_get_int(settings, CC_CHANNEL);
-	cc.filePath = obs_data_get_string(settings, CC_FILE);
+	if (obs_data_get_bool(settings, CC_FILE_ENABLE))
+		cc.filePath = obs_data_get_string(settings, CC_FILE);
 	cc.appendToFile = obs_data_get_int(settings, CC_FILE_MODE) == 1;
 	cc.textSource = obs_data_get_string(settings, CC_TEXT_SOURCE);
 	cc.clearSeconds = (int)obs_data_get_int(settings, CC_CLEAR_SECONDS);
@@ -1206,6 +1209,7 @@ static void GetDShowDefaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, CC_ENABLE, true);
 	obs_data_set_default_int(settings, CC_CHANNEL, 1);
 	obs_data_set_default_int(settings, CC_FILE_MODE, 0);
+	obs_data_set_default_bool(settings, CC_FILE_ENABLE, false);
 	obs_data_set_default_int(settings, CC_INPUT, (int)CaptionInput::Vbi);
 	obs_data_set_default_string(settings, CC_TEXT_SOURCE, "");
 	obs_data_set_default_int(settings, CC_CLEAR_SECONDS, 16);
@@ -1997,13 +2001,7 @@ static obs_properties_t *GetDShowProperties(void *obj)
 	obs_property_list_add_int(p, "CC1", 1);
 	obs_property_list_add_int(p, "CC2", 2);
 
-	obs_properties_add_path(ccGroup, CC_FILE, TEXT_CC_FILE, OBS_PATH_FILE_SAVE, "Text files (*.txt)", nullptr);
-
-	p = obs_properties_add_list(ccGroup, CC_FILE_MODE, TEXT_CC_FILE_MODE, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(p, obs_module_text("Captions.FileMode.Current"), 0);
-	obs_property_list_add_int(p, obs_module_text("Captions.FileMode.Append"), 1);
-	obs_property_set_long_description(p, obs_module_text("Captions.FileMode.ToolTip"));
-
+	/* the preferred output: a Text source updated the moment captions change */
 	p = obs_properties_add_list(ccGroup, CC_TEXT_SOURCE, TEXT_CC_TEXT_SOURCE, OBS_COMBO_TYPE_LIST,
 				    OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(p, TEXT_CC_NONE, "");
@@ -2023,7 +2021,23 @@ static obs_properties_t *GetDShowProperties(void *obj)
 	obs_property_int_set_suffix(p, " s");
 	obs_property_set_long_description(p, obs_module_text("Captions.ClearSeconds.ToolTip"));
 
-	obs_properties_add_bool(ccGroup, CC_LOG_RAW, TEXT_CC_LOG_RAW);
+	/* optional text file output: a checkable section (the checkbox is
+	 * stored under the section's name, CC_FILE_ENABLE) */
+	obs_properties_t *fileGroup = obs_properties_create();
+
+	obs_properties_add_path(fileGroup, CC_FILE, TEXT_CC_FILE_PATH, OBS_PATH_FILE_SAVE, "Text files (*.txt)",
+				nullptr);
+
+	p = obs_properties_add_list(fileGroup, CC_FILE_MODE, TEXT_CC_FILE_MODE, OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("Captions.FileMode.Overwrite"), 0);
+	obs_property_list_add_int(p, obs_module_text("Captions.FileMode.Append"), 1);
+	obs_property_set_long_description(p, obs_module_text("Captions.FileMode.ToolTip"));
+
+	obs_properties_add_group(ccGroup, CC_FILE_ENABLE, TEXT_CC_FILE, OBS_GROUP_CHECKABLE, fileGroup);
+
+	p = obs_properties_add_bool(ccGroup, CC_LOG_RAW, TEXT_CC_LOG_RAW);
+	obs_property_set_long_description(p, obs_module_text("Captions.LogRaw.ToolTip"));
 
 	obs_properties_add_group(ppts, "cc_group", TEXT_CC_GROUP, OBS_GROUP_NORMAL, ccGroup);
 

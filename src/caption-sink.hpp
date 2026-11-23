@@ -1,8 +1,8 @@
 /*
  * Receives closed caption data from the capture device (either raw VBI
  * waveforms or the device's own decoded CC byte pairs), decodes it, and
- * publishes the caption text currently on screen to a text file and/or an
- * OBS text source.
+ * publishes the caption text currently on screen to an OBS text source and/or
+ * a text file.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
