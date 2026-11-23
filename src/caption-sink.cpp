@@ -9,6 +9,7 @@
 
 #include <util/platform.h>
 #include <util/bmem.h>
+#include <util/threading.h>
 
 #include <windows.h>
 #include <cstdio>
