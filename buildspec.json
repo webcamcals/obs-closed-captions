@@ -5,7 +5,7 @@
             "baseUrl": "https://github.com/obsproject/obs-studio/archive/refs/tags",
             "label": "OBS sources",
             "hashes": {
-                "windows-x64": "0000000000000000000000000000000000000000000000000000000000000000"
+                "windows-x64": "85a9d6d3dcdb6c972a445e8f0b3c03e1db9d914e9666c3a94bf0a15df4cadce7"
             }
         },
         "prebuilt": {
