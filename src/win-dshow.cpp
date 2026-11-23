@@ -24,6 +24,7 @@
 #include "caption-sink.hpp"
 
 #include <algorithm>
+#include <cinttypes>
 #include <cstring>
 #include <limits>
 #include <set>
