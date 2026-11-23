@@ -14,6 +14,7 @@
 
 #include <obs-module.h>
 
+#include <climits>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -37,6 +38,7 @@ struct CaptionSettings {
 	CaptionInput input = CaptionInput::Vbi;
 	int channel = 1;
 	std::string filePath;
+	bool appendToFile = false; /* transcript mode: add finished lines to the end */
 	std::string textSource;
 	int clearSeconds = 16;
 	bool logRaw = false;
@@ -99,6 +101,10 @@ private:
 	std::vector<unsigned char> vbiFormatBlock;
 	Line21Slicer slicer;
 	uint64_t vbiSampleCounter = 0;
+	uint64_t fieldIndex = 0;
+	long long lastVbiStart = 0;
+	bool haveLastVbiStart = false;
+	int steadyFieldDeltas = 0;
 	bool loggedVbiFormat = false;
 	bool warnedNoVbiFormat = false;
 
@@ -111,6 +117,7 @@ private:
 
 	std::string lastText;
 	bool haveLastText = false;
+	std::vector<std::string> finishedScratch;
 
 	uint64_t lastDataTime = 0;
 	uint64_t lastStatsTime = 0;
@@ -132,6 +139,9 @@ private:
 		uint64_t activePairs = 0;
 		uint64_t activeParityFails = 0;
 		uint64_t activeData = 0;
+		uint64_t vbiMissedFields = 0;
+		long long vbiDeltaMin = LLONG_MAX;
+		long long vbiDeltaMax = LLONG_MIN;
 	} stats;
 
 	void PublishLocked(bool force = false);
@@ -145,6 +155,7 @@ private:
 		std::string filePath;
 		std::string textSource;
 		std::shared_ptr<std::vector<unsigned char>> dumpData;
+		bool append = false;
 	};
 
 	std::mutex jobMutex;
@@ -156,6 +167,7 @@ private:
 	void QueueJob(Job job);
 	void WorkerLoop();
 	void WriteCaptionFile(const std::string &path, const std::string &text);
+	void AppendToFile(const std::string &path, const std::string &text);
 	void WriteDump(const std::string &path, const std::vector<unsigned char> &data);
 	static void UpdateTextSource(const std::string &name, const std::string &text);
 };

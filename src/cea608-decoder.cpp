@@ -139,6 +139,7 @@ void Cea608Decoder::Reset()
 	row = ROWS - 1;
 	col = 0;
 	havePrevControl = false;
+	finished.clear();
 }
 
 void Cea608Decoder::EraseDisplayed()
@@ -155,34 +156,59 @@ bool Cea608Decoder::DisplayedIsEmpty() const
 	return true;
 }
 
+std::string Cea608Decoder::RowText(const Memory &mem, int r)
+{
+	std::string out;
+	int first = -1, last = -1;
+	for (int c = 0; c < COLS; c++) {
+		char32_t ch = mem[r][c];
+		if (ch && ch != 0x20) {
+			if (first < 0)
+				first = c;
+			last = c;
+		}
+	}
+
+	for (int c = first; first >= 0 && c <= last; c++) {
+		char32_t ch = mem[r][c];
+		AppendUtf8(out, ch ? ch : 0x20);
+	}
+	return out;
+}
+
 std::string Cea608Decoder::DisplayedText() const
 {
 	std::string out;
 
 	for (int r = 0; r < ROWS; r++) {
-		int first = -1, last = -1;
-		for (int c = 0; c < COLS; c++) {
-			char32_t ch = (*displayed)[r][c];
-			if (ch && ch != 0x20) {
-				if (first < 0)
-					first = c;
-				last = c;
-			}
-		}
-
-		if (first < 0)
+		std::string row = RowText(*displayed, r);
+		if (row.empty())
 			continue;
-
 		if (!out.empty())
 			out += '\n';
-
-		for (int c = first; c <= last; c++) {
-			char32_t ch = (*displayed)[r][c];
-			AppendUtf8(out, ch ? ch : 0x20);
-		}
+		out += row;
 	}
 
 	return out;
+}
+
+void Cea608Decoder::FinishRow(const Memory &mem, int r)
+{
+	std::string row = RowText(mem, r);
+	if (!row.empty())
+		finished.push_back(row);
+}
+
+void Cea608Decoder::FinishAll(const Memory &mem)
+{
+	for (int r = 0; r < ROWS; r++)
+		FinishRow(mem, r);
+}
+
+void Cea608Decoder::TakeFinishedLines(std::vector<std::string> &out)
+{
+	out.insert(out.end(), finished.begin(), finished.end());
+	finished.clear();
 }
 
 /* ------------------------------------------------------------------------ */
@@ -238,6 +264,8 @@ void Cea608Decoder::CarriageReturn()
 	int top = baseRow - rollRows + 1;
 	if (top < 0)
 		top = 0;
+
+	FinishRow(*displayed, baseRow);
 
 	for (int r = top; r < baseRow; r++) {
 		for (int c = 0; c < COLS; c++)
@@ -305,6 +333,10 @@ void Cea608Decoder::HandleMiscControl(uint8_t c2)
 {
 	switch (c2) {
 	case 0x20: /* RCL: resume caption loading (pop-on) */
+		if (mode == Mode::PaintOn)
+			FinishAll(*displayed);
+		else if (mode == Mode::RollUp)
+			FinishRow(*displayed, baseRow);
 		mode = Mode::PopOn;
 		break;
 	case 0x21: /* BS: backspace */
@@ -339,6 +371,10 @@ void Cea608Decoder::HandleMiscControl(uint8_t c2)
 		mode = Mode::Text;
 		break;
 	case 0x2C: /* EDM: erase displayed memory */
+		if (mode == Mode::PaintOn)
+			FinishAll(*displayed);
+		else if (mode == Mode::RollUp)
+			FinishRow(*displayed, baseRow);
 		ClearMemory(*displayed);
 		break;
 	case 0x2D: /* CR: carriage return */
@@ -348,8 +384,11 @@ void Cea608Decoder::HandleMiscControl(uint8_t c2)
 		ClearMemory(*nonDisplayed);
 		break;
 	case 0x2F: /* EOC: end of caption (flip memories) */
+		if (mode == Mode::PaintOn)
+			FinishAll(*displayed);
 		std::swap(displayed, nonDisplayed);
 		mode = Mode::PopOn;
+		FinishAll(*displayed);
 		break;
 	}
 }

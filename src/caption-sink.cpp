@@ -37,7 +37,8 @@ CaptionSink::~CaptionSink()
 	std::string filePath;
 	{
 		std::lock_guard<std::mutex> lock(mutex);
-		filePath = settings.filePath;
+		if (!settings.appendToFile)
+			filePath = settings.filePath;
 	}
 
 	{
@@ -67,6 +68,9 @@ void CaptionSink::ResetDecodingLocked()
 	activeKey = CC_PIN_KEY;
 	haveActive = false;
 	vbiSampleCounter = 0;
+	fieldIndex = 0;
+	haveLastVbiStart = false;
+	steadyFieldDeltas = 0;
 	haveLastCcStart = false;
 }
 
@@ -76,8 +80,10 @@ void CaptionSink::Configure(const CaptionSettings &newSettings)
 
 	/* clear whatever the old settings were publishing to */
 	if (haveLastText && (newSettings.filePath != settings.filePath ||
+			     newSettings.appendToFile != settings.appendToFile ||
 			     newSettings.textSource != settings.textSource || !newSettings.enabled)) {
-		QueueJob({std::string(), settings.filePath, settings.textSource, nullptr});
+		QueueJob({std::string(), settings.appendToFile ? std::string() : settings.filePath,
+			  settings.textSource, nullptr});
 	}
 
 	settings = newSettings;
@@ -106,7 +112,7 @@ void CaptionSink::Configure(const CaptionSettings &newSettings)
 		     "[Closed Captions: '%s'] enabled\n"
 		     "\tinput: %s\n"
 		     "\tchannel: CC%d\n"
-		     "\ttext file: %s\n"
+		     "\ttext file: %s (%s)\n"
 		     "\ttext source: %s\n"
 		     "\tclear after: %d seconds\n"
 		     "\tlog raw data: %s",
@@ -114,6 +120,7 @@ void CaptionSink::Configure(const CaptionSettings &newSettings)
 		     settings.input == CaptionInput::Vbi ? "VBI pin (decoded by plugin)"
 							 : "CC pin (decoded by device)",
 		     settings.channel, settings.filePath.empty() ? "(none)" : settings.filePath.c_str(),
+		     settings.appendToFile ? "transcript: finished lines are appended" : "current caption",
 		     settings.textSource.empty() ? "(none)" : settings.textSource.c_str(), settings.clearSeconds,
 		     settings.logRaw ? "yes" : "no");
 
@@ -165,6 +172,22 @@ void CaptionSink::FeedPair(int key, uint8_t b1, uint8_t b2, uint64_t now)
 
 	Cea608Decoder::PairResult result = slot.decoder.Decode(b1, b2);
 	slot.found++;
+
+	finishedScratch.clear();
+	slot.decoder.TakeFinishedLines(finishedScratch);
+	if (!finishedScratch.empty() && haveActive && key == activeKey && settings.appendToFile &&
+	    !settings.filePath.empty()) {
+		std::string text;
+		for (const std::string &line : finishedScratch) {
+			text += line;
+			text += '\n';
+		}
+		Job job;
+		job.text = text;
+		job.filePath = settings.filePath;
+		job.append = true;
+		QueueJob(std::move(job));
+	}
 	if (result != Cea608Decoder::PairResult::Padding)
 		slot.dataPairs++;
 
@@ -367,12 +390,38 @@ void CaptionSink::OnVbiData(const unsigned char *data, size_t size, long long st
 	size_t perField = fmt.endLine - fmt.startLine + 1;
 	bool twoFields = rows >= 2 * perField;
 
-	int parity;
-	if (hasTime)
-		parity = (int)(std::llround((double)startTime / NTSC_FIELD_100NS) & 1);
-	else
-		parity = (int)(vbiSampleCounter & 1);
+	/* Which field is this?  Fields strictly alternate, so toggle on every
+	 * sample.  Only use timestamps to notice dropped fields, and only once
+	 * they've proven to tick steadily at one field period. (Absolute
+	 * timestamps can sit halfway between field boundaries, so rounding
+	 * them is not reliable.) */
+	if (vbiSampleCounter > 0) {
+		fieldIndex++;
+		if (hasTime && haveLastVbiStart) {
+			long long delta = startTime - lastVbiStart;
+			stats.vbiDeltaMin = std::min(stats.vbiDeltaMin, delta);
+			stats.vbiDeltaMax = std::max(stats.vbiDeltaMax, delta);
+
+			bool oneField = delta > NTSC_FIELD_100NS * 0.8 && delta < NTSC_FIELD_100NS * 1.2;
+			if (oneField) {
+				if (steadyFieldDeltas < 1000)
+					steadyFieldDeltas++;
+			} else if (steadyFieldDeltas >= 30 && delta > NTSC_FIELD_100NS * 1.5 &&
+				   delta < NTSC_FIELD_100NS * 600) {
+				long long missed = std::llround((double)delta / NTSC_FIELD_100NS) - 1;
+				fieldIndex += (uint64_t)missed;
+				stats.vbiMissedFields += (uint64_t)missed;
+			} else {
+				steadyFieldDeltas = 0;
+			}
+		}
+	}
+	if (hasTime) {
+		lastVbiStart = startTime;
+		haveLastVbiStart = true;
+	}
 	vbiSampleCounter++;
+	int parity = (int)(fieldIndex & 1);
 
 	size_t lineSamples = std::min<size_t>(fmt.samplesPerLine, stride);
 
@@ -487,11 +536,13 @@ void CaptionSink::LogStatsLocked(uint64_t now)
 		blog(LOG_INFO,
 		     "[Closed Captions: '%s'] last 30s: %llu video frames, %llu VBI samples, %llu lines with a "
 		     "caption signal. Reading %s: %llu pairs decoded, %llu unreadable (parity), %llu caption "
-		     "pairs. On screen now: \"%s\"",
+		     "pairs. Timestamp steps %lld-%lld, %llu fields dropped. On screen now: \"%s\"",
 		     Name(), (unsigned long long)stats.videoFrames, (unsigned long long)stats.vbiSamples,
 		     (unsigned long long)stats.vbiLinesWithCc, where.c_str(), (unsigned long long)stats.activePairs,
 		     (unsigned long long)stats.activeParityFails, (unsigned long long)stats.activeData,
-		     current.c_str());
+		     stats.vbiDeltaMin == LLONG_MAX ? 0LL : stats.vbiDeltaMin,
+		     stats.vbiDeltaMax == LLONG_MIN ? 0LL : stats.vbiDeltaMax,
+		     (unsigned long long)stats.vbiMissedFields, current.c_str());
 
 		if (settings.logRaw) {
 			for (auto &it : slots) {
@@ -530,10 +581,11 @@ void CaptionSink::PublishLocked(bool force)
 	lastText = text;
 	haveLastText = true;
 
-	if (settings.filePath.empty() && settings.textSource.empty())
+	std::string file = settings.appendToFile ? std::string() : settings.filePath;
+	if (file.empty() && settings.textSource.empty())
 		return;
 
-	QueueJob({text, settings.filePath, settings.textSource, nullptr});
+	QueueJob({text, file, settings.textSource, nullptr});
 }
 
 /* ------------------------------------------------------------------------ */
@@ -570,12 +622,16 @@ void CaptionSink::WorkerLoop()
 				WriteDump(job.filePath, *job.dumpData);
 				continue;
 			}
+			if (job.append) {
+				AppendToFile(job.filePath, job.text);
+				continue;
+			}
 
 			/* If several updates piled up, only the newest one for
 			 * each destination matters. */
 			bool superseded = false;
 			for (size_t j = i + 1; j < batch.size(); j++) {
-				if (!batch[j].dumpData && batch[j].filePath == job.filePath &&
+				if (!batch[j].dumpData && !batch[j].append && batch[j].filePath == job.filePath &&
 				    batch[j].textSource == job.textSource) {
 					superseded = true;
 					break;
@@ -645,6 +701,36 @@ void CaptionSink::WriteCaptionFile(const std::string &path, const std::string &t
 		blog(LOG_WARNING, "[Closed Captions] could not write caption file '%s' (error %lu)", path.c_str(),
 		     GetLastError());
 	}
+}
+
+void CaptionSink::AppendToFile(const std::string &path, const std::string &text)
+{
+	wchar_t *wpath = nullptr;
+	if (!os_utf8_to_wcs_ptr(path.c_str(), path.size(), &wpath) || !wpath)
+		return;
+
+	HANDLE file = INVALID_HANDLE_VALUE;
+	for (int attempt = 0; attempt < 5 && file == INVALID_HANDLE_VALUE; attempt++) {
+		file = CreateFileW(wpath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+				   OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (file == INVALID_HANDLE_VALUE)
+			Sleep(5);
+	}
+	bfree(wpath);
+
+	if (file == INVALID_HANDLE_VALUE) {
+		static bool warned = false;
+		if (!warned) {
+			warned = true;
+			blog(LOG_WARNING, "[Closed Captions] could not append to '%s' (error %lu)", path.c_str(),
+			     GetLastError());
+		}
+		return;
+	}
+
+	DWORD written = 0;
+	WriteFile(file, text.data(), (DWORD)text.size(), &written, nullptr);
+	CloseHandle(file);
 }
 
 void CaptionSink::WriteDump(const std::string &path, const std::vector<unsigned char> &data)

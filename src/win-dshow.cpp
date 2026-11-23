@@ -66,6 +66,7 @@ using namespace DShow;
 #define CC_CHANNEL        "cc_channel"
 #define CC_INPUT          "cc_input"
 #define CC_FILE           "cc_file"
+#define CC_FILE_MODE      "cc_file_mode"
 #define CC_TEXT_SOURCE    "cc_text_source"
 #define CC_CLEAR_SECONDS  "cc_clear_seconds"
 #define CC_LOG_RAW        "cc_log_raw"
@@ -95,6 +96,7 @@ using namespace DShow;
 #define TEXT_CC_INPUT_VBI   obs_module_text("Captions.Input.Vbi")
 #define TEXT_CC_INPUT_CC    obs_module_text("Captions.Input.CcPin")
 #define TEXT_CC_FILE        obs_module_text("Captions.File")
+#define TEXT_CC_FILE_MODE   obs_module_text("Captions.FileMode")
 #define TEXT_CC_TEXT_SOURCE obs_module_text("Captions.TextSource")
 #define TEXT_CC_NONE        obs_module_text("Captions.TextSource.None")
 #define TEXT_CC_CLEAR       obs_module_text("Captions.ClearSeconds")
@@ -1116,6 +1118,7 @@ void DShowInput::ConfigureCaptions(obs_data_t *settings)
 	cc.enabled = obs_data_get_bool(settings, CC_ENABLE);
 	cc.channel = (int)obs_data_get_int(settings, CC_CHANNEL);
 	cc.filePath = obs_data_get_string(settings, CC_FILE);
+	cc.appendToFile = obs_data_get_int(settings, CC_FILE_MODE) == 1;
 	cc.textSource = obs_data_get_string(settings, CC_TEXT_SOURCE);
 	cc.clearSeconds = (int)obs_data_get_int(settings, CC_CLEAR_SECONDS);
 	cc.logRaw = obs_data_get_bool(settings, CC_LOG_RAW);
@@ -1202,6 +1205,7 @@ static void GetDShowDefaults(obs_data_t *settings)
 
 	obs_data_set_default_bool(settings, CC_ENABLE, true);
 	obs_data_set_default_int(settings, CC_CHANNEL, 1);
+	obs_data_set_default_int(settings, CC_FILE_MODE, 0);
 	obs_data_set_default_int(settings, CC_INPUT, (int)CaptionInput::Vbi);
 	obs_data_set_default_string(settings, CC_TEXT_SOURCE, "");
 	obs_data_set_default_int(settings, CC_CLEAR_SECONDS, 16);
@@ -1994,6 +1998,11 @@ static obs_properties_t *GetDShowProperties(void *obj)
 	obs_property_list_add_int(p, "CC2", 2);
 
 	obs_properties_add_path(ccGroup, CC_FILE, TEXT_CC_FILE, OBS_PATH_FILE_SAVE, "Text files (*.txt)", nullptr);
+
+	p = obs_properties_add_list(ccGroup, CC_FILE_MODE, TEXT_CC_FILE_MODE, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("Captions.FileMode.Current"), 0);
+	obs_property_list_add_int(p, obs_module_text("Captions.FileMode.Append"), 1);
+	obs_property_set_long_description(p, obs_module_text("Captions.FileMode.ToolTip"));
 
 	p = obs_properties_add_list(ccGroup, CC_TEXT_SOURCE, TEXT_CC_TEXT_SOURCE, OBS_COMBO_TYPE_LIST,
 				    OBS_COMBO_FORMAT_STRING);

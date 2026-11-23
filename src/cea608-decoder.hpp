@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 class Cea608Decoder {
 public:
@@ -48,6 +49,11 @@ public:
 
 	bool DisplayedIsEmpty() const;
 
+	/* Caption lines that have "finished" since the last call, in order:
+	 * pop-on captions when they appear, roll-up lines when they scroll up,
+	 * paint-on text when it's erased.  For building a transcript. */
+	void TakeFinishedLines(std::vector<std::string> &out);
+
 	/* Describes a byte pair for troubleshooting logs, e.g. "EOC" or
 	 * "'He'". Parity is stripped before describing. */
 	static std::string Describe(uint8_t b1, uint8_t b2);
@@ -74,10 +80,16 @@ private:
 	int row = ROWS - 1;
 	int col = 0;
 
+	std::vector<std::string> finished;
+
 	bool havePrevControl = false;
 	uint8_t prevC1 = 0, prevC2 = 0;
 
 	Memory &Target() { return (mode == Mode::PopOn) ? *nonDisplayed : *displayed; }
+
+	static std::string RowText(const Memory &mem, int r);
+	void FinishRow(const Memory &mem, int r);
+	void FinishAll(const Memory &mem);
 
 	static void ClearMemory(Memory &mem);
 	static void ClearRow(Memory &mem, int r);

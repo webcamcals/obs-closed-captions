@@ -20,9 +20,15 @@ Requires **OBS Studio 33 or newer** (built against OBS 33.0.3).
 ## Settings (in the source's properties, under "Closed Captions")
 
 - **Capture closed captions**: on/off.
+- **Caption input**: *Raw VBI* (the plugin decodes line 21 itself, like a TV; recommended) or
+  *CC pin* (the capture chip's own decoder, which can miss letters on VHS).
 - **Caption channel**: CC1 (almost always) or CC2.
 - **Write captions to text file**: point an OBS Text source's "Read from file" at this file.
-- **Also update this text source directly**: optional, instant updates without the file.
+- **Text file contents**: *Current caption* (exactly what a TV would show right now; empty when
+  nothing is shown) or *Transcript* (each finished caption line is appended; pairs well with the
+  Text source's Chatlog Mode).
+- **Also update this text source directly**: instant updates (a Text source reading a file only
+  checks it about once a second).
 - **Clear captions after…**: clears the text if no caption data arrives for this long.
 - **Log raw caption data**: troubleshooting; writes every caption byte pair to the OBS log.
 
