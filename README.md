@@ -11,8 +11,11 @@ update an OBS Text source directly). When no caption is showing, the file is emp
 
 1. Download the latest build from the repository's **Actions** tab (newest run → *Artifacts*).
 2. Unzip it into `C:\ProgramData\obs-studio\plugins\` so you end up with
-   `C:\ProgramData\obs-studio\plugins\obs-closed-captions\bin\64bit\obs-closed-captions.dll`.
+   `C:\ProgramData\obs-studio\plugins\obs-closed-captions\obs-closed-captions.dll`
+   (the OBS 33+ plugin layout).
 3. Restart OBS and add the source **Video Capture Device (with Closed Captions)**.
+
+Requires **OBS Studio 33 or newer** (built against OBS 33.0.3).
 
 ## Settings (in the source's properties, under "Closed Captions")
 

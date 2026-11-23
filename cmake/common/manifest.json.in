@@ -1,0 +1,16 @@
+{
+    "id": "com.webcamcals.obs-closed-captions",
+    "name": "@CMAKE_PROJECT_NAME@",
+    "display_name": "Closed Caption Capture",
+    "version": "@PLUGIN_VERSION@",
+    "os_arch": "windows-x64",
+    "description": "Video Capture Device source that also reads analog closed captions (line 21) and writes the on-screen caption text to a file or text source.",
+    "long_description": "Works like OBS's built-in Video Capture Device, and additionally reads EIA-608 closed captions from capture devices that expose a DirectShow CC pin (such as the Hauppauge USB-Live2).",
+    "urls": {
+        "repository": "https://github.com/webcamcals/obs-closed-captions",
+        "website": "https://github.com/webcamcals/obs-closed-captions",
+        "support": "https://github.com/webcamcals/obs-closed-captions/issues"
+    },
+    "has_banner": false,
+    "has_icon": false
+}
