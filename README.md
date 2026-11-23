@@ -20,24 +20,23 @@ Requires OBS 33+
 2. Unzip it into `C:\ProgramData\obs-studio\plugins\` so you end up with `C:\ProgramData\obs-studio\plugins\obs-closed-captions\obs-closed-captions.dll`.
 3. Restart OBS
 4. Add a **Text source** for displaying closed captions
-5. Add the source **Video Capture Device (with Closed Captions)**
+5. Add the source **Video Capture Device (with Closed Captions)**, and point it at your text source for caption display
+6. Set up your **Text source** however you want it. I recommend enabling `Use Custom Text Extents` in the properties to format and align the text where you want it in a rectangle of your preferred size.
 
 Requires **OBS Studio 33 or newer** (built against OBS 33.0.3).
 
 ## Settings (in the source's properties, under "Closed Captions")
-
+<img width="448" height="361" alt="image" src="https://github.com/user-attachments/assets/0d9e7ca3-2925-4ffb-a458-533c6cf62e4b" />
+In addition to the standard Video Source options, the **Video Capture Device (with Closed Captions)** source has a Closed Captions settings pane, with the following options:
 - **Capture closed captions**: on/off.
-- **Caption input**: *Raw VBI* (the plugin decodes line 21 itself, like a TV; recommended) or
-  *CC pin* (the capture chip's own decoder, which can miss letters on VHS).
+- **Caption input**: *Raw VBI* decodes captions from the analog video signal the same way a CRT does; this is recommended for accuracy. *CC pin* relies on the closed caption signal provided by your capture device's driver, which omitted a lot of characters in my testing.
 - **Caption channel**: CC1 (almost always) or CC2.
-- **Write captions to text file**: point an OBS Text source's "Read from file" at this file.
-- **Text file contents**: *Current caption* (exactly what a TV would show right now; empty when
-  nothing is shown) or *Transcript* (each finished caption line is appended; pairs well with the
-  Text source's Chatlog Mode).
-- **Also update this text source directly**: instant updates (a Text source reading a file only
-  checks it about once a second).
+- **Text source for closed captions**: Select a text source for the plugin to use so it can update changes in captions instantly. This is preferred for displaying captions in real-time.
 - **Clear captions after…**: clears the text if no caption data arrives for this long.
-- **Log raw caption data**: troubleshooting; writes every caption byte pair to the OBS log.
+- **Write captions to text file**: on/off.
+- **File**: text file to write captions in.
+- **Text file contents**: *Overwrite* or *Append*. Overwrite replaces the entire document with only the text that is currently being shown on-screen, and empties it when there is none. Append writes each new line to the bottom row of the text file, which can be useful for archival purposes. If you are displaying a text file in OBS with Append mode, I recommend enabling ‘Chatlog Mode’ to set how many of the most recent lines to show.
+- **Troubleshooting**: keeps more detailed logs for troubleshooting purposes
 
 ## Closed Captions?
 I recommend [Technology Connections' video explaining how Closed Captions work](https://www.youtube.com/watch?v=6SL6zs2bDks). You can expect to find closed captions in professionally-released movies, and amateur recordings of broadcast TV. Some DVDs have closed captions in addition to digital subtitles, but not all. Laser Discs probably have them, too, if you swing that way.
