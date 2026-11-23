@@ -27,6 +27,14 @@
 #define DUMP_START_TIMEOUT_NS (20ULL * NS_PER_SEC)
 #define DUMP_MAX_SAMPLES 600
 
+/* Which VBI line/field carries CC1 is decided from recent evidence only, so
+ * the plugin re-locks quickly if the field order slips (e.g. when a VCR is
+ * stopped and started again). */
+#define SCORE_HALF_LIFE_NS (4ULL * NS_PER_SEC)
+#define SCORE_MAX 60.0
+#define SWITCH_MARGIN 6.0
+#define ACTIVE_STALE_NS (NS_PER_SEC)
+
 /* DirectShow time units (100 ns) per NTSC frame / field */
 #define NTSC_FRAME_100NS 333667LL
 #define NTSC_FIELD_100NS 166833.5
@@ -160,19 +168,33 @@ Cea608Decoder *CaptionSink::ActiveDecoder()
 	return it == slots.end() ? nullptr : &it->second->decoder;
 }
 
+double CaptionSink::EffectiveScore(const Slot &slot, uint64_t now)
+{
+	if (slot.score == 0.0 || now <= slot.scoreTime)
+		return slot.score;
+	double age = (double)(now - slot.scoreTime) / (double)SCORE_HALF_LIFE_NS;
+	return slot.score * std::exp2(-age);
+}
+
 void CaptionSink::FeedPair(int key, uint8_t b1, uint8_t b2, uint64_t now)
 {
 	Slot &slot = GetSlot(key);
+	slot.lastValid = now;
 
 	/* Evidence about which field this is: CC1/CC2 live in field 1 and use
 	 * 0x14/0x1C commands; field 2 uses 0x15/0x1D commands and XDS. */
 	uint8_t c1 = b1 & 0x7F, c2 = b2 & 0x7F;
+	double delta = 0.0;
 	if (c2 >= 0x20 && c2 <= 0x2F && (c1 & 0xF7) == 0x14)
-		slot.score += 3;
+		delta = 3.0;
 	else if (c2 >= 0x20 && c2 <= 0x2F && (c1 & 0xF7) == 0x15)
-		slot.score -= 3;
+		delta = -3.0;
 	else if (c1 >= 0x01 && c1 <= 0x0F)
-		slot.score -= 1;
+		delta = -1.0;
+	if (delta != 0.0) {
+		slot.score = std::max(-SCORE_MAX, std::min(SCORE_MAX, EffectiveScore(slot, now) + delta));
+		slot.scoreTime = now;
+	}
 
 	Cea608Decoder::PairResult result = slot.decoder.Decode(b1, b2);
 	slot.found++;
@@ -212,35 +234,49 @@ void CaptionSink::FeedPair(int key, uint8_t b1, uint8_t b2, uint64_t now)
 	}
 }
 
-void CaptionSink::ChooseActiveLocked()
+void CaptionSink::ChooseActiveLocked(uint64_t now)
 {
+	Slot *cur = nullptr;
+	if (haveActive) {
+		auto it = slots.find(activeKey);
+		if (it != slots.end())
+			cur = it->second.get();
+	}
+
+	/* Only lines that are receiving data right now can be chosen. */
+	bool currentStale = !cur || now - cur->lastValid > ACTIVE_STALE_NS;
+
 	int bestKey = 0;
 	Slot *best = nullptr;
+	double bestScore = 0.0;
 
 	for (auto &it : slots) {
 		Slot *s = it.second.get();
-		if (!best || s->score > best->score || (s->score == best->score && s->dataPairs > best->dataPairs)) {
+		if (now - s->lastValid > ACTIVE_STALE_NS)
+			continue;
+		double score = EffectiveScore(*s, now);
+		if (!best || score > bestScore || (score == bestScore && s->lastValid > best->lastValid)) {
 			best = s;
 			bestKey = it.first;
+			bestScore = score;
 		}
 	}
 
 	if (!best)
 		return;
 
-	if (haveActive && bestKey == activeKey)
+	if (cur && bestKey == activeKey)
 		return;
 
-	if (haveActive) {
-		auto cur = slots.find(activeKey);
-		if (cur != slots.end()) {
-			/* hysteresis: don't flip-flop between candidates */
-			Slot *c = cur->second.get();
-			bool clearlyBetter = best->score > c->score + 6 ||
-					     (best->score == c->score && best->dataPairs > c->dataPairs + 30);
-			if (!clearlyBetter)
-				return;
-		}
+	if (cur) {
+		/* Switch when another line is clearly carrying CC1/CC2 and either
+		 * beats the current one by a margin, or the current one has gone
+		 * quiet. Otherwise stay put (no flip-flopping). */
+		double curScore = EffectiveScore(*cur, now);
+		bool clearlyBetter = bestScore > curScore + SWITCH_MARGIN;
+		bool takeOver = currentStale && bestScore >= SWITCH_MARGIN;
+		if (!clearlyBetter && !takeOver)
+			return;
 	}
 
 	activeKey = bestKey;
@@ -461,7 +497,7 @@ void CaptionSink::OnVbiData(const unsigned char *data, size_t size, long long st
 	if (dumpStarted)
 		DumpSampleLocked(data, size, startTime, hasTime);
 
-	ChooseActiveLocked();
+	ChooseActiveLocked(now);
 	PublishLocked();
 }
 
@@ -554,9 +590,9 @@ void CaptionSink::LogStatsLocked(uint64_t now)
 					continue;
 				Slot *s = it.second.get();
 				blog(LOG_INFO,
-				     "[Closed Captions: '%s']   VBI line %d field %c: score %lld, %llu decoded, "
+				     "[Closed Captions: '%s']   VBI line %d field %c: score %.1f, %llu decoded, "
 				     "%llu with data, %llu unreadable",
-				     Name(), s->line, s->field ? 'B' : 'A', (long long)s->score,
+				     Name(), s->line, s->field ? 'B' : 'A', EffectiveScore(*s, now),
 				     (unsigned long long)s->found, (unsigned long long)s->dataPairs,
 				     (unsigned long long)s->runInNoParity);
 			}

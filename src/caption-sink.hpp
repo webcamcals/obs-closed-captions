@@ -79,7 +79,9 @@ private:
 	 * uses key CC_PIN_KEY.  The one carrying CC1/CC2 is "active". */
 	struct Slot {
 		Cea608Decoder decoder;
-		int64_t score = 0;      /* evidence that this is field 1 (CC1/CC2) */
+		double score = 0.0;     /* recent evidence that this is field 1 (CC1/CC2) */
+		uint64_t scoreTime = 0; /* when score was last updated (it fades over time) */
+		uint64_t lastValid = 0; /* when this slot last decoded a valid pair */
 		uint64_t dataPairs = 0; /* non-empty pairs seen */
 		uint64_t found = 0;     /* valid pairs decoded */
 		uint64_t runInNoParity = 0;
@@ -93,7 +95,8 @@ private:
 
 	Slot &GetSlot(int key);
 	void FeedPair(int key, uint8_t b1, uint8_t b2, uint64_t now);
-	void ChooseActiveLocked();
+	void ChooseActiveLocked(uint64_t now);
+	static double EffectiveScore(const Slot &slot, uint64_t now);
 	Cea608Decoder *ActiveDecoder();
 
 	/* VBI */
