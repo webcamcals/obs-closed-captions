@@ -1,5 +1,5 @@
 name: Dispatch
-run-name: Dispatched Repository Actions - ${{ inputs.job }} ⌛️
+run-name: Dispatched Repository Actions - ${{ inputs.job }} ${{ inputs.version }} ⌛️
 on:
   workflow_dispatch:
     inputs:
@@ -9,10 +9,85 @@ on:
         type: choice
         options:
           - build
+          - release
+      version:
+        description: 'Release version (for "release" only), e.g. 1.0.0. Must match the version in buildspec.json.'
+        required: false
+        type: string
 permissions:
   contents: write
 jobs:
+  check-version:
+    name: Check Release Version ☑️
+    if: inputs.job == 'release'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Release Version ☑️
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          : Check Release Version ☑️
+          spec_version="$(jq -r .version buildspec.json)"
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(beta|rc)[0-9]*)?$ ]]; then
+            echo "::error::'${VERSION}' is not a version number like 1.0.0"
+            exit 1
+          fi
+          if [[ "${VERSION}" != "${spec_version}" ]]; then
+            echo "::error::Version '${VERSION}' does not match buildspec.json (${spec_version})"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" > /dev/null; then
+            echo "::error::A release tag '${VERSION}' already exists"
+            exit 1
+          fi
+
   check-and-build:
-    if: inputs.job == 'build'
+    needs: check-version
+    # check-version is skipped for plain builds; build anyway
+    if: ${{ always() && (inputs.job == 'build' || needs.check-version.result == 'success') }}
     uses: ./.github/workflows/build-project.yaml
     secrets: inherit
+
+  create-release:
+    name: Create Draft Release 🛫
+    if: inputs.job == 'release'
+    needs: check-and-build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Build Artifacts 📥
+        uses: actions/download-artifact@v4
+
+      - name: Collect Files 🏷️
+        run: |
+          : Collect Files 🏷️
+          shopt -s nullglob
+          commit_hash="${GITHUB_SHA:0:9}"
+          for candidate in *-windows-x64-${commit_hash}/*.zip; do
+            mv "${candidate}" .
+          done
+          cp tools/convert-scene-collection.html .
+          ls -l *.zip *.html
+
+          echo "### Checksums" > CHECKSUMS.txt
+          for file in *.zip *.html; do
+            echo "    ${file}: $(sha256sum "${file}" | cut -d " " -f 1)" >> CHECKSUMS.txt
+          done
+
+      - name: Create Draft Release 🛫
+        uses: softprops/action-gh-release@9d7c94cfd0a1f3ed45544c887983e9fa900f0564
+        with:
+          draft: true
+          prerelease: ${{ contains(inputs.version, '-') }}
+          tag_name: ${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.check-and-build.outputs.pluginName }} ${{ inputs.version }}
+          body_path: CHECKSUMS.txt
+          files: |
+            *.zip
+            convert-scene-collection.html
