@@ -1,8 +1,10 @@
 # Closed Caption Capture for OBS
 
-<img width="2470" height="1167" alt="image" src="https://github.com/user-attachments/assets/87efacc7-4d3f-4397-b8ac-234cb8e78819" />
+<img width="1280" height="640" alt="image" src="https://github.com/user-attachments/assets/a9f06b4b-3795-422e-b5a7-b7a735927c6d" />
 
 This plugin for OBS Studio decodes closed captions in a digitized analog video signal, and lets you display them in an OBS Text Source and/or write the closed captions to a txt file.
+
+<img width="2470" height="1167" alt="image" src="https://github.com/user-attachments/assets/87efacc7-4d3f-4397-b8ac-234cb8e78819" />
 
 It works by adding a new source, **Video Capture Device (with Closed Captions)**, which works like the built-in **Video Capture Device** source, but also reads analog **closed captions** (EIA-608 / "line 21") from capture devices that expose a DirectShow `CC` pin (tested with the [Hauppauge USB-Live2](https://hauppauge.store/product/610/). Not a sponsor, 'Tubes.)\*.
 
