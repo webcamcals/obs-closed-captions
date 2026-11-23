@@ -34,6 +34,9 @@ struct PinCaptureInfo {
 	std::function<void(IMediaSample *sample)> callback;
 	GUID expectedMajorType{};
 	GUID expectedSubType{};
+	/* if non-zero, ask the upstream pin for at least this many buffers
+	 * (added for closed caption capture) */
+	long requestedBuffers = 0;
 };
 
 class CapturePin : public IPin, public IMemInputPin {

@@ -283,7 +283,14 @@ STDMETHODIMP CapturePin::GetAllocatorRequirements(ALLOCATOR_PROPERTIES *pProps)
 {
 	PrintFunc(L"CapturePin::GetAllocatorRequirements");
 
-	DSHOW_UNUSED(pProps);
+	if (captureInfo.requestedBuffers > 0 && pProps) {
+		pProps->cBuffers = captureInfo.requestedBuffers;
+		pProps->cbBuffer = 0;
+		pProps->cbAlign = 0;
+		pProps->cbPrefix = 0;
+		return S_OK;
+	}
+
 	return E_NOTIMPL;
 }
 

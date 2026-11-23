@@ -221,6 +221,8 @@ void HDevice::RemoveCaptionCapture()
 	}
 }
 
+#define CAPTION_BUFFERS 64
+
 static void LogOutputPins(IBaseFilter *filter)
 {
 	ComPtr<IEnumPins> pinsEnum;
@@ -266,10 +268,32 @@ void HDevice::ConnectCaptionPin()
 		return;
 	}
 
+	/* The CC pin delivers one tiny sample per frame.  With the driver's
+	 * default (very small) number of buffers, samples are dropped whenever
+	 * a buffer isn't handed back in time, which loses caption letters.
+	 * Ask for plenty of buffers. */
+	ComQIPtr<IAMBufferNegotiation> neg(ccPin);
+	if (neg) {
+		ALLOCATOR_PROPERTIES props;
+		props.cBuffers = CAPTION_BUFFERS;
+		props.cbBuffer = -1;
+		props.cbAlign = -1;
+		props.cbPrefix = -1;
+		hr = neg->SuggestAllocatorProperties(&props);
+		if (FAILED(hr))
+			WarningHR(L"Closed captions: could not request more "
+				  L"buffers on the CC pin",
+				  hr);
+	} else {
+		Info(L"Closed captions: CC pin has no buffer negotiation "
+		     L"interface");
+	}
+
 	PinCaptureInfo info;
 	info.callback = [this](IMediaSample *s) { ReceiveCaption(s); };
 	info.expectedMajorType = MEDIATYPE_AUXLine21Data;
 	info.expectedSubType = MEDIASUBTYPE_Line21_BytePair;
+	info.requestedBuffers = CAPTION_BUFFERS;
 
 	captionCapture = new CaptureFilter(info);
 
@@ -296,6 +320,13 @@ void HDevice::ConnectCaptionPin()
 	}
 
 	Info(L"Closed captions: connected to the device's CC pin");
+
+	if (neg) {
+		ALLOCATOR_PROPERTIES actual = {};
+		if (SUCCEEDED(neg->GetAllocatorProperties(&actual)))
+			Info(L"Closed captions: CC pin buffers: %ld x %ld bytes",
+			     actual.cBuffers, actual.cbBuffer);
+	}
 }
 
 /* ------------------------------------------------------------------------ */

@@ -267,7 +267,7 @@ struct DShowInput {
 		WaitForSingleObject(thread, INFINITE);
 	}
 
-	void OnCaptionData(const unsigned char *data, size_t size);
+	void OnCaptionData(const unsigned char *data, size_t size, long long startTime, bool hasTime);
 	void ConfigureCaptions(obs_data_t *settings);
 
 	void OnReactivate();
@@ -1101,9 +1101,9 @@ inline void DShowInput::Deactivate()
 	obs_source_output_video2(source, nullptr);
 }
 
-void DShowInput::OnCaptionData(const unsigned char *data, size_t size)
+void DShowInput::OnCaptionData(const unsigned char *data, size_t size, long long startTime, bool hasTime)
 {
-	captions.OnCaptionData(data, size);
+	captions.OnCaptionData(data, size, startTime, hasTime);
 }
 
 void DShowInput::ConfigureCaptions(obs_data_t *settings)
@@ -1119,9 +1119,10 @@ void DShowInput::ConfigureCaptions(obs_data_t *settings)
 	captions.Configure(cc);
 
 	if (cc.enabled) {
-		device.SetCaptionCallback([this](const unsigned char *data, size_t size, long long, bool) {
-			OnCaptionData(data, size);
-		});
+		device.SetCaptionCallback(
+			[this](const unsigned char *data, size_t size, long long startTime, bool hasTime) {
+				OnCaptionData(data, size, startTime, hasTime);
+			});
 	} else {
 		device.SetCaptionCallback(nullptr);
 	}

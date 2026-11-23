@@ -17,14 +17,34 @@
 #define STATS_INTERVAL_NS (30ULL * NS_PER_SEC)
 #define NO_DATA_WARNING_NS (10ULL * NS_PER_SEC)
 
-CaptionSink::CaptionSink(obs_source_t *owner_) : owner(owner_) {}
+/* DirectShow time units (100 ns) per NTSC frame */
+#define NTSC_FRAME_100NS 333667LL
+
+CaptionSink::CaptionSink(obs_source_t *owner_) : owner(owner_)
+{
+	worker = std::thread(&CaptionSink::WorkerLoop, this);
+}
 
 CaptionSink::~CaptionSink()
 {
-	std::lock_guard<std::mutex> lock(mutex);
-	decoder.Reset();
-	/* don't touch other sources here: we may be in OBS shutdown */
-	PublishLocked(false, true);
+	std::string filePath;
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		filePath = settings.filePath;
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(jobMutex);
+		stopping = true;
+	}
+	jobCond.notify_all();
+	if (worker.joinable())
+		worker.join();
+
+	/* Leave an empty caption file behind. Don't touch other sources here:
+	 * this may run during OBS shutdown. */
+	if (!filePath.empty())
+		WriteCaptionFile(filePath, std::string());
 }
 
 const char *CaptionSink::Name() const
@@ -32,21 +52,14 @@ const char *CaptionSink::Name() const
 	return obs_source_get_name(owner);
 }
 
-bool CaptionSink::Enabled()
-{
-	std::lock_guard<std::mutex> lock(mutex);
-	return settings.enabled;
-}
-
 void CaptionSink::Configure(const CaptionSettings &newSettings)
 {
 	std::lock_guard<std::mutex> lock(mutex);
 
 	/* clear whatever the old settings were publishing to */
-	if (publishedOnce && (newSettings.filePath != settings.filePath ||
-			      newSettings.textSource != settings.textSource || !newSettings.enabled)) {
-		decoder.Reset();
-		PublishLocked(true);
+	if (haveLastText && (newSettings.filePath != settings.filePath ||
+			     newSettings.textSource != settings.textSource || !newSettings.enabled)) {
+		QueueJob({std::string(), settings.filePath, settings.textSource});
 	}
 
 	settings = newSettings;
@@ -55,13 +68,13 @@ void CaptionSink::Configure(const CaptionSettings &newSettings)
 
 	uint64_t now = os_gettime_ns();
 	lastDataTime = now;
-	lastSampleTime = 0;
 	lastStatsTime = now;
 	lastTickTime = now;
+	configureTime = now;
 	loggedFirstSample = false;
 	loggedNoSamples = false;
+	haveLastSampleStart = false;
 	stats = Stats();
-	totalStats = Stats();
 
 	if (settings.enabled) {
 		blog(LOG_INFO,
@@ -87,7 +100,7 @@ void CaptionSink::Configure(const CaptionSettings &newSettings)
 	PublishLocked(true);
 }
 
-void CaptionSink::OnCaptionData(const unsigned char *data, size_t size)
+void CaptionSink::OnCaptionData(const unsigned char *data, size_t size, long long startTime, bool hasTime)
 {
 	std::lock_guard<std::mutex> lock(mutex);
 
@@ -95,16 +108,27 @@ void CaptionSink::OnCaptionData(const unsigned char *data, size_t size)
 		return;
 
 	uint64_t now = os_gettime_ns();
-	lastSampleTime = now;
 
 	if (!loggedFirstSample) {
 		loggedFirstSample = true;
-		blog(LOG_INFO, "[Closed Captions: '%s'] receiving data from the CC pin (%u bytes per sample)",
-		     Name(), (unsigned)size);
+		blog(LOG_INFO, "[Closed Captions: '%s'] receiving data from the CC pin (%u bytes per sample, %s)",
+		     Name(), (unsigned)size, hasTime ? "timestamped" : "no timestamps");
+	}
+
+	/* Detect samples the device never delivered, using timestamps. */
+	if (hasTime) {
+		if (haveLastSampleStart) {
+			long long delta = startTime - lastSampleStart;
+			if (delta > NTSC_FRAME_100NS * 3 / 2 && delta < NTSC_FRAME_100NS * 300) {
+				stats.gaps++;
+				stats.missedFrames += (uint64_t)((delta + NTSC_FRAME_100NS / 2) / NTSC_FRAME_100NS) - 1;
+			}
+		}
+		lastSampleStart = startTime;
+		haveLastSampleStart = true;
 	}
 
 	stats.samples++;
-	stats.bytes += size;
 
 	for (size_t i = 0; i + 1 < size; i += 2) {
 		uint8_t b1 = data[i];
@@ -146,14 +170,16 @@ void CaptionSink::Tick()
 	if (!settings.enabled)
 		return;
 
+	stats.videoFrames++;
+
 	uint64_t now = os_gettime_ns();
 
-	/* Tick may be called for every video frame; only do work ~4x/sec */
+	/* only do the rest ~4x per second */
 	if (now - lastTickTime < NS_PER_SEC / 4)
 		return;
 	lastTickTime = now;
 
-	if (!loggedFirstSample && !loggedNoSamples && now - lastStatsTime > NO_DATA_WARNING_NS) {
+	if (!loggedFirstSample && !loggedNoSamples && now - configureTime > NO_DATA_WARNING_NS) {
 		loggedNoSamples = true;
 		blog(LOG_WARNING,
 		     "[Closed Captions: '%s'] video is arriving, but no data has come from the "
@@ -176,6 +202,7 @@ void CaptionSink::Clear()
 {
 	std::lock_guard<std::mutex> lock(mutex);
 	decoder.Reset();
+	haveLastSampleStart = false;
 	PublishLocked();
 }
 
@@ -183,38 +210,93 @@ void CaptionSink::LogStatsLocked(uint64_t now)
 {
 	lastStatsTime = now;
 
-	if (!stats.samples)
+	if (!stats.samples) {
+		stats = Stats();
 		return;
+	}
 
 	std::string current = decoder.DisplayedText();
 	for (char &c : current)
 		if (c == '\n')
 			c = '|';
 
+	double pct = stats.videoFrames ? 100.0 * (double)stats.samples / (double)stats.videoFrames : 0.0;
+
 	blog(LOG_INFO,
-	     "[Closed Captions: '%s'] last 30s: %llu samples, %llu caption pairs, %llu other-channel pairs, "
+	     "[Closed Captions: '%s'] last 30s: %llu video frames, %llu CC samples (%.1f%%), "
+	     "%llu gaps (~%llu samples missed), %llu caption pairs, %llu other-channel pairs, "
 	     "%llu empty pairs, %llu parity errors. On screen now: \"%s\"",
-	     Name(), (unsigned long long)stats.samples, (unsigned long long)stats.data,
-	     (unsigned long long)stats.otherChannel, (unsigned long long)stats.padding,
-	     (unsigned long long)stats.parityErrors, current.c_str());
+	     Name(), (unsigned long long)stats.videoFrames, (unsigned long long)stats.samples, pct,
+	     (unsigned long long)stats.gaps, (unsigned long long)stats.missedFrames,
+	     (unsigned long long)stats.data, (unsigned long long)stats.otherChannel,
+	     (unsigned long long)stats.padding, (unsigned long long)stats.parityErrors, current.c_str());
 
 	stats = Stats();
 }
 
-void CaptionSink::PublishLocked(bool force, bool fileOnly)
+void CaptionSink::PublishLocked(bool force)
 {
 	std::string text = settings.enabled ? decoder.DisplayedText() : std::string();
 
-	if (!force && publishedOnce && text == published)
+	if (!force && haveLastText && text == lastText)
 		return;
 
-	published = text;
-	publishedOnce = true;
+	lastText = text;
+	haveLastText = true;
 
-	if (!settings.filePath.empty())
-		WriteCaptionFile(settings.filePath, text);
-	if (!fileOnly && !settings.textSource.empty())
-		UpdateTextSource(settings.textSource, text);
+	if (settings.filePath.empty() && settings.textSource.empty())
+		return;
+
+	QueueJob({text, settings.filePath, settings.textSource});
+}
+
+/* ------------------------------------------------------------------------ */
+/* Output worker: file writes and text source updates happen here, never on  */
+/* the capture thread.                                                       */
+
+void CaptionSink::QueueJob(Job job)
+{
+	{
+		std::lock_guard<std::mutex> lock(jobMutex);
+		jobs.push_back(std::move(job));
+	}
+	jobCond.notify_one();
+}
+
+void CaptionSink::WorkerLoop()
+{
+	os_set_thread_name("closed-captions: output");
+
+	for (;;) {
+		std::deque<Job> batch;
+		{
+			std::unique_lock<std::mutex> lock(jobMutex);
+			jobCond.wait(lock, [this] { return stopping || !jobs.empty(); });
+			if (stopping && jobs.empty())
+				return;
+			batch.swap(jobs);
+		}
+
+		/* If several updates piled up, only the newest one for each
+		 * destination matters. */
+		for (size_t i = 0; i < batch.size(); i++) {
+			const Job &job = batch[i];
+			bool superseded = false;
+			for (size_t j = i + 1; j < batch.size(); j++) {
+				if (batch[j].filePath == job.filePath && batch[j].textSource == job.textSource) {
+					superseded = true;
+					break;
+				}
+			}
+			if (superseded)
+				continue;
+
+			if (!job.filePath.empty())
+				WriteCaptionFile(job.filePath, job.text);
+			if (!job.textSource.empty())
+				UpdateTextSource(job.textSource, job.text);
+		}
+	}
 }
 
 static bool WriteAll(const wchar_t *path, const std::string &text)
@@ -247,10 +329,10 @@ void CaptionSink::WriteCaptionFile(const std::string &path, const std::string &t
 	 * another program at that instant), overwrite it directly. */
 	bool ok = false;
 	if (WriteAll(temp.c_str(), text)) {
-		for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+		for (int attempt = 0; attempt < 5 && !ok; attempt++) {
 			ok = MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
 			if (!ok)
-				Sleep(2);
+				Sleep(5);
 		}
 		if (!ok)
 			DeleteFileW(temp.c_str());
@@ -262,8 +344,8 @@ void CaptionSink::WriteCaptionFile(const std::string &path, const std::string &t
 	static bool warned = false;
 	if (!ok && !warned) {
 		warned = true;
-		blog(LOG_WARNING, "[Closed Captions: '%s'] could not write caption file '%s' (error %lu)", Name(),
-		     path.c_str(), GetLastError());
+		blog(LOG_WARNING, "[Closed Captions] could not write caption file '%s' (error %lu)", path.c_str(),
+		     GetLastError());
 	}
 }
 

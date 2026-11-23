@@ -13,9 +13,12 @@
 
 #include <obs-module.h>
 
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include "cea608-decoder.hpp"
 
@@ -35,13 +38,14 @@ public:
 
 	/* Apply new settings; resets the decoder and clears the output. */
 	void Configure(const CaptionSettings &settings);
-	bool Enabled();
 
-	/* Called from the DirectShow streaming thread with the CC pin's data. */
-	void OnCaptionData(const unsigned char *data, size_t size);
+	/* Called from the DirectShow streaming thread with the CC pin's data.
+	 * Must return quickly: while it runs, the device can't deliver the
+	 * next frame's caption bytes. All slow work happens on a worker. */
+	void OnCaptionData(const unsigned char *data, size_t size, long long startTime, bool hasTime);
 
-	/* Called regularly (e.g. once per video frame) to handle the
-	 * "clear after N seconds" timer and periodic diagnostics. */
+	/* Called for every video frame: drives the "clear after N seconds"
+	 * timer and periodic diagnostics. */
 	void Tick();
 
 	/* Called when capture stops: clears the published text. */
@@ -49,31 +53,53 @@ public:
 
 private:
 	obs_source_t *owner;
+
+	/* ---- decoding state (protected by mutex) ---- */
 	std::mutex mutex;
 	CaptionSettings settings;
 	Cea608Decoder decoder;
-	std::string published;
-	bool publishedOnce = false;
+	std::string lastText;
+	bool haveLastText = false;
 
-	uint64_t lastDataTime = 0;   /* last caption data for our channel */
-	uint64_t lastSampleTime = 0; /* last sample of any kind from the CC pin */
+	uint64_t lastDataTime = 0;
 	uint64_t lastStatsTime = 0;
 	uint64_t lastTickTime = 0;
+	uint64_t configureTime = 0;
 	bool loggedFirstSample = false;
 	bool loggedNoSamples = false;
+	long long lastSampleStart = 0;
+	bool haveLastSampleStart = false;
 
 	struct Stats {
+		uint64_t videoFrames = 0;
 		uint64_t samples = 0;
-		uint64_t bytes = 0;
 		uint64_t padding = 0;
 		uint64_t data = 0;
 		uint64_t otherChannel = 0;
 		uint64_t parityErrors = 0;
-	} stats, totalStats;
+		uint64_t gaps = 0;
+		uint64_t missedFrames = 0;
+	} stats;
 
-	void PublishLocked(bool force = false, bool fileOnly = false);
-	void WriteCaptionFile(const std::string &path, const std::string &text);
-	void UpdateTextSource(const std::string &name, const std::string &text);
+	void PublishLocked(bool force = false);
 	void LogStatsLocked(uint64_t now);
 	const char *Name() const;
+
+	/* ---- output worker ---- */
+	struct Job {
+		std::string text;
+		std::string filePath;
+		std::string textSource;
+	};
+
+	std::mutex jobMutex;
+	std::condition_variable jobCond;
+	std::deque<Job> jobs;
+	bool stopping = false;
+	std::thread worker;
+
+	void QueueJob(Job job);
+	void WorkerLoop();
+	void WriteCaptionFile(const std::string &path, const std::string &text);
+	static void UpdateTextSource(const std::string &name, const std::string &text);
 };
