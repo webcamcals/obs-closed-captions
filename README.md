@@ -27,6 +27,7 @@ Requires **OBS Studio 33 or newer** (built against OBS 33.0.3).
 
 ## Settings (in the source's properties, under "Closed Captions")
 <img width="448" height="361" alt="image" src="https://github.com/user-attachments/assets/0d9e7ca3-2925-4ffb-a458-533c6cf62e4b" />
+
 In addition to the standard Video Source options, the **Video Capture Device (with Closed Captions)** source has a Closed Captions settings pane, with the following options:
 - **Capture closed captions**: on/off.
 - **Caption input**: *Raw VBI* decodes captions from the analog video signal the same way a CRT does; this is recommended for accuracy. *CC pin* relies on the closed caption signal provided by your capture device's driver, which omitted a lot of characters in my testing.
@@ -36,7 +37,7 @@ In addition to the standard Video Source options, the **Video Capture Device (wi
 - **Write captions to text file**: on/off.
 - **File**: text file to write captions in.
 - **Text file contents**: *Overwrite* or *Append*. Overwrite replaces the entire document with only the text that is currently being shown on-screen, and empties it when there is none. Append writes each new line to the bottom row of the text file, which can be useful for archival purposes. If you are displaying a text file in OBS with Append mode, I recommend enabling ‘Chatlog Mode’ to set how many of the most recent lines to show.
-- **Troubleshooting**: keeps more detailed logs for troubleshooting purposes
+- **Troubleshooting**: keeps more detailed logs for troubleshooting purposes.
 
 ## Closed Captions?
 I recommend [Technology Connections' video explaining how Closed Captions work](https://www.youtube.com/watch?v=6SL6zs2bDks). You can expect to find closed captions in professionally-released movies, and amateur recordings of broadcast TV. Some DVDs have closed captions in addition to digital subtitles, but not all. Laser Discs probably have them, too, if you swing that way.
