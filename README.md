@@ -6,26 +6,25 @@ This plugin for OBS Studio decodes closed captions in a digitized analog video s
 
 <img width="2470" height="1167" alt="image" src="https://github.com/user-attachments/assets/87efacc7-4d3f-4397-b8ac-234cb8e78819" />
 
+
 It works by adding a new source, **Video Capture Device (with Closed Captions)**, which works like the built-in **Video Capture Device** source, but also reads analog **closed captions** (EIA-608 / "line 21") from capture devices that expose a DirectShow `CC` pin\* (tested with the [Hauppauge USB-Live2](https://hauppauge.store/product/610/). Not a sponsor, youtube).
 
 There are two things that can be done with the closed captions:
-- Text Source: A text source of your choice is updated directly with captions that would be currently showing on a TV; when there are no captions on-screen, it's empty.
-- Write to text file: You write the captions to a text file of your choice in one of two ways: by overwriting the file with only the currently-showing captions (if any), or by appending each new line of captions to the bottom of a file. Because OBS only checks text files for updates once every second or so, the Text Source direct update method above is preferred for showing closed captions in real-time in your layout.
+- **Text Source**: A text source of your choice is updated directly with captions that would be currently showing on a TV; when there are no captions on-screen, it's empty.
+- **Write to text file**: You write the captions to a text file of your choice in one of two ways: by overwriting the file with only the currently-showing captions (if any), or by appending each new line of captions to the bottom of a file. Because OBS only checks text files for updates once every second or so, the Text Source direct update method above is preferred for showing closed captions in real-time in your layout.
 
 \* Note that if you are running your analog signal through something like an RCA->HDMI converter and feeding that into a capture card, you probably aren't getting the closed caption signal. Sorry. You probably need something that exists specifically to digitize an analog video signal.
 
-Requires OBS 33+
-
 ## Install
 
-1. Download the latest build
-2. Unzip it into `C:\ProgramData\obs-studio\plugins\` so you end up with `C:\ProgramData\obs-studio\plugins\obs-closed-captions\obs-closed-captions.dll`.
-3. Restart OBS
+1. Download zip, close OBS
+2. Extract and copy the `obs-closed-captions` folder into `C:\ProgramData\obs-studio\plugins\`, so you end up with `C:\ProgramData\obs-studio\plugins\obs-closed-captions\obs-closed-captions.dll`.
+3. Start OBS
 4. Add a **Text source** for displaying closed captions
 5. Add the source **Video Capture Device (with Closed Captions)**, and point it at your text source for caption display
 6. Set up your **Text source** however you want it. I recommend enabling `Use Custom Text Extents` in the properties to format and align the text where you want it in a rectangle of your preferred size.
 
-Requires **OBS Studio 33 or newer** (built against OBS 33.0.3).
+Requires **OBS Studio 33+**.
 
 ## Settings (in the source's properties, under "Closed Captions")
 <img width="448" height="361" alt="image" src="https://github.com/user-attachments/assets/0d9e7ca3-2925-4ffb-a458-533c6cf62e4b" />
@@ -38,8 +37,9 @@ In addition to the standard Video Source options, the **Video Capture Device (wi
 - **Clear captions after…**: clears the text if no caption data arrives for this long.
 - **Write captions to text file**: on/off.
 - **File**: text file to write captions in.
-- **Text file contents**: *Overwrite* or *Append*. Overwrite replaces the entire document with only the text that is currently being shown on-screen, and empties it when there is none. Append writes each new line to the bottom row of the text file, which can be useful for archival purposes. If you are displaying a text file in OBS with Append mode, I recommend enabling ‘Chatlog Mode’ in the Text Source Properties window to set how many of the most recent lines to show.
+- **Text file contents**: *Overwrite* or *Append*. Overwrite replaces the entire document with only the text that is currently being shown on-screen, and empties it when there is none. Append writes each new line to the bottom row of the text file, which can be useful for archival purposes. If you are displaying a text file in OBS in Append mode, I recommend enabling ‘Chatlog Mode’ in the Text Source Properties window to set how many of the most recent lines to show.
 - **Troubleshooting**: keeps more detailed logs for troubleshooting purposes.
+
 
 <img width="2545" height="1204" alt="image" src="https://github.com/user-attachments/assets/f9393e97-aaf7-43ef-8393-187d0766e66d" />
 
@@ -62,4 +62,7 @@ Claude wrote all the code... I don't know anything about that stuff. But a human
 
 ## Credits
 
-Based on OBS Studio's `win-dshow` plugin and `libdshowcapture` (Lain Bailey and OBS contributors). Licensed under the GPL v2 or later.
+Based on OBS Studio's `win-dshow` plugin and `libdshowcapture` (Lain Bailey and OBS contributors). Licensed under the GPL v2 or later. Tested on [Popcorn Classics](https://www.oncinematimeline.com/popcorn-classics); list provided by Gregg Turkington at the Victorville Film Archive.
+
+<img width="790" height="732" alt="image" src="https://github.com/user-attachments/assets/d0dfcc4c-0120-45e9-98e4-965284a89ca6" />
+
