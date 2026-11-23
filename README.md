@@ -6,7 +6,7 @@ This plugin for OBS Studio decodes closed captions in a digitized analog video s
 
 <img width="2470" height="1167" alt="image" src="https://github.com/user-attachments/assets/87efacc7-4d3f-4397-b8ac-234cb8e78819" />
 
-It works by adding a new source, **Video Capture Device (with Closed Captions)**, which works like the built-in **Video Capture Device** source, but also reads analog **closed captions** (EIA-608 / "line 21") from capture devices that expose a DirectShow `CC` pin\* (tested with the [Hauppauge USB-Live2](https://hauppauge.store/product/610/). Not a sponsor, 'Tubes.).
+It works by adding a new source, **Video Capture Device (with Closed Captions)**, which works like the built-in **Video Capture Device** source, but also reads analog **closed captions** (EIA-608 / "line 21") from capture devices that expose a DirectShow `CC` pin\* (tested with the [Hauppauge USB-Live2](https://hauppauge.store/product/610/). Not a sponsor, 'Tubes).
 
 There are two things that can be done with the closed captions:
 - Text Source: A text source of your choice is updated directly with captions that would be currently showing on a TV; when there are no captions on-screen, it's empty.
