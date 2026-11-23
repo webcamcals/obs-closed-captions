@@ -330,6 +330,145 @@ void HDevice::ConnectCaptionPin()
 }
 
 /* ------------------------------------------------------------------------ */
+/* Raw VBI capture (the waveform of line 21 etc.)                            */
+
+void HDevice::ReceiveVbi(IMediaSample *sample)
+{
+	BYTE *ptr;
+
+	if (!sample || !vbiCallback)
+		return;
+
+	long size = sample->GetActualDataLength();
+	if (size <= 0)
+		return;
+
+	if (FAILED(sample->GetPointer(&ptr)))
+		return;
+
+	long long startTime = 0, stopTime = 0;
+	bool hasTime = SUCCEEDED(sample->GetTime(&startTime, &stopTime));
+
+	vbiCallback(ptr, (size_t)size, startTime, hasTime, vbiFormat.data(),
+		    vbiFormat.size());
+}
+
+void HDevice::RemoveVbiCapture()
+{
+	if (vbiCapture) {
+		if (graph)
+			graph->RemoveFilter(vbiCapture);
+		vbiCapture.Release();
+	}
+}
+
+static void LogGuid(const wchar_t *label, const GUID &g)
+{
+	wchar_t str[64];
+	StringFromGUID2(g, str, 64);
+	Info(L"Closed captions:   %s %s", label, str);
+}
+
+bool HDevice::ConnectVbiPin()
+{
+	ComPtr<IPin> vbiPin;
+	ComPtr<IPin> capturePin;
+	ComPtr<IEnumMediaTypes> mtEnum;
+	MediaTypePtr mt;
+	MediaType chosen;
+	bool haveType = false;
+	HRESULT hr;
+
+	RemoveVbiCapture();
+	vbiFormat.clear();
+
+	if (!vbiCallback || !videoFilter || encodedDevice)
+		return false;
+
+	if (!GetFilterPin(videoFilter, MEDIATYPE_VBI, PIN_CATEGORY_VBI,
+			  PINDIR_OUTPUT, &vbiPin) &&
+	    !GetPinByName(videoFilter, PINDIR_OUTPUT, L"VBI", &vbiPin)) {
+		Warning(L"Closed captions: this device has no VBI pin");
+		return false;
+	}
+
+	if (SUCCEEDED(vbiPin->EnumMediaTypes(&mtEnum))) {
+		ULONG count = 0;
+		while (mtEnum->Next(1, &mt, &count) == S_OK) {
+			Info(L"Closed captions: VBI pin offers:");
+			LogGuid(L"major:", mt->majortype);
+			LogGuid(L"sub:  ", mt->subtype);
+			LogGuid(L"fmt:  ", mt->formattype);
+			if (!haveType && mt->majortype == MEDIATYPE_VBI) {
+				chosen = mt;
+				haveType = true;
+			}
+		}
+	}
+
+	if (!haveType) {
+		Warning(L"Closed captions: VBI pin offers no VBI media type");
+		return false;
+	}
+
+	if (chosen->pbFormat && chosen->cbFormat)
+		vbiFormat.assign(chosen->pbFormat,
+				 chosen->pbFormat + chosen->cbFormat);
+
+	ComQIPtr<IAMBufferNegotiation> neg(vbiPin);
+	if (neg) {
+		ALLOCATOR_PROPERTIES props;
+		props.cBuffers = CAPTION_BUFFERS;
+		props.cbBuffer = -1;
+		props.cbAlign = -1;
+		props.cbPrefix = -1;
+		neg->SuggestAllocatorProperties(&props);
+	}
+
+	PinCaptureInfo info;
+	info.callback = [this](IMediaSample *s) { ReceiveVbi(s); };
+	info.expectedMajorType = chosen->majortype;
+	info.expectedSubType = chosen->subtype;
+	info.requestedBuffers = CAPTION_BUFFERS;
+
+	vbiCapture = new CaptureFilter(info);
+
+	hr = graph->AddFilter(vbiCapture, L"VBI Capture Filter");
+	if (FAILED(hr)) {
+		WarningHR(L"Closed captions: failed to add VBI filter", hr);
+		vbiCapture.Release();
+		return false;
+	}
+
+	if (!GetPinByName(vbiCapture, PINDIR_INPUT, nullptr, &capturePin)) {
+		RemoveVbiCapture();
+		return false;
+	}
+
+	hr = graph->ConnectDirect(vbiPin, capturePin, chosen);
+	if (FAILED(hr)) {
+		WarningHR(L"Closed captions: failed to connect VBI pin", hr);
+		RemoveVbiCapture();
+		return false;
+	}
+
+	/* the format may have been finalized during connection */
+	AM_MEDIA_TYPE connected = {};
+	if (SUCCEEDED(vbiPin->ConnectionMediaType(&connected))) {
+		if (connected.pbFormat && connected.cbFormat)
+			vbiFormat.assign(connected.pbFormat,
+					 connected.pbFormat +
+						 connected.cbFormat);
+		FreeMediaType(connected);
+	}
+
+	Info(L"Closed captions: connected to the device's VBI pin "
+	     L"(format block %u bytes)",
+	     (unsigned)vbiFormat.size());
+	return true;
+}
+
+/* ------------------------------------------------------------------------ */
 
 void HDevice::ConvertVideoSettings()
 {
@@ -522,6 +661,7 @@ bool HDevice::SetVideoConfig(VideoConfig *config)
 
 	videoMediaType = NULL;
 	RemoveCaptionCapture();
+	RemoveVbiCapture();
 	graph->RemoveFilter(videoFilter);
 	graph->RemoveFilter(videoCapture);
 	videoFilter.Release();
@@ -956,8 +1096,11 @@ bool HDevice::ConnectFilters()
 		}
 	}
 
-	if (success && videoCapture != NULL && captionCallback)
-		ConnectCaptionPin();
+	if (success && videoCapture != NULL) {
+		bool vbiConnected = vbiCallback && ConnectVbiPin();
+		if (!vbiConnected && captionCallback)
+			ConnectCaptionPin();
+	}
 
 	if (success)
 		LogFilters(graph);
@@ -998,12 +1141,13 @@ Result HDevice::Start()
 
 	/* If the graph won't run with the caption pin connected, fall back to
 	 * running without captions rather than losing video entirely. */
-	if (FAILED(hr) && captionCapture) {
+	if (FAILED(hr) && (captionCapture || vbiCapture)) {
 		WarningHR(L"Run failed with closed captions connected; "
 			  L"retrying without closed captions",
 			  hr);
 		control->Stop();
 		RemoveCaptionCapture();
+		RemoveVbiCapture();
 		hr = control->Run();
 	}
 

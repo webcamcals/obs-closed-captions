@@ -74,6 +74,11 @@ void Device::SetCaptionCallback(CaptionProc callback)
 	context->captionCallback = callback;
 }
 
+void Device::SetVbiCallback(VbiProc callback)
+{
+	context->vbiCallback = callback;
+}
+
 bool Device::ConnectFilters()
 {
 	return context->ConnectFilters();

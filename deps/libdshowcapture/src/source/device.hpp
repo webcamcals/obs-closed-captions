@@ -57,6 +57,9 @@ struct HDevice {
 	ComPtr<CaptureFilter> audioCapture;
 	ComPtr<CaptureFilter> captionCapture;
 	CaptionProc captionCallback;
+	ComPtr<CaptureFilter> vbiCapture;
+	VbiProc vbiCallback;
+	std::vector<unsigned char> vbiFormat;
 	ComPtr<IBaseFilter> audioOutput;
 	ComPtr<IBaseFilter> rocketEncoder;
 	MediaType videoMediaType;
@@ -92,6 +95,9 @@ struct HDevice {
 	void ReceiveCaption(IMediaSample *sample);
 	void RemoveCaptionCapture();
 	void ConnectCaptionPin();
+	void ReceiveVbi(IMediaSample *sample);
+	void RemoveVbiCapture();
+	bool ConnectVbiPin();
 
 	bool SetupEncodedVideoCapture(IBaseFilter *filter, VideoConfig &config,
 				      const EncodedDevice &info);

@@ -389,7 +389,7 @@ void Cea608Decoder::HandleControl(uint8_t c1, uint8_t c2)
 		break;
 
 	case 0x14:
-	case 0x15: /* 0x15 is the field 2 form of the same commands */
+	case 0x15:
 		if (c2 >= 0x20 && c2 <= 0x2F)
 			HandleMiscControl(c2);
 		break;
@@ -438,7 +438,12 @@ Cea608Decoder::PairResult Cea608Decoder::Decode(uint8_t b1, uint8_t b2)
 		prevC1 = c1;
 		prevC2 = c2;
 
-		dataChannel = (c1 & 0x08) ? 2 : 1;
+		/* 0x14/0x1C misc codes are CC1/CC2 (field 1); 0x15/0x1D misc
+		 * codes are CC3/CC4 (field 2). */
+		if ((c1 & 0xF7) == 0x15 && c2 >= 0x20 && c2 <= 0x2F)
+			dataChannel = (c1 & 0x08) ? 4 : 3;
+		else
+			dataChannel = (c1 & 0x08) ? 2 : 1;
 		if (dataChannel != channel)
 			return PairResult::OtherChannel;
 
@@ -483,8 +488,10 @@ std::string Cea608Decoder::Describe(uint8_t b1, uint8_t b2)
 		return "(null)";
 
 	if (c1 >= 0x10 && c1 <= 0x1F) {
-		int ch = (c1 & 0x08) ? 2 : 1;
 		uint8_t base = c1 & 0xF7;
+		int ch = (c1 & 0x08) ? 2 : 1;
+		if (base == 0x15 && c2 >= 0x20 && c2 <= 0x2F)
+			ch += 2;
 
 		if (c2 >= 0x40) {
 			int r = pacRows[base & 0x07][(c2 & 0x20) ? 1 : 0];

@@ -64,6 +64,7 @@ using namespace DShow;
 #define AUTOROTATION      "autorotation"
 #define CC_ENABLE         "cc_enable"
 #define CC_CHANNEL        "cc_channel"
+#define CC_INPUT          "cc_input"
 #define CC_FILE           "cc_file"
 #define CC_TEXT_SOURCE    "cc_text_source"
 #define CC_CLEAR_SECONDS  "cc_clear_seconds"
@@ -90,6 +91,9 @@ using namespace DShow;
 #define TEXT_CC_GROUP       obs_module_text("Captions")
 #define TEXT_CC_ENABLE      obs_module_text("Captions.Enable")
 #define TEXT_CC_CHANNEL     obs_module_text("Captions.Channel")
+#define TEXT_CC_INPUT       obs_module_text("Captions.Input")
+#define TEXT_CC_INPUT_VBI   obs_module_text("Captions.Input.Vbi")
+#define TEXT_CC_INPUT_CC    obs_module_text("Captions.Input.CcPin")
 #define TEXT_CC_FILE        obs_module_text("Captions.File")
 #define TEXT_CC_TEXT_SOURCE obs_module_text("Captions.TextSource")
 #define TEXT_CC_NONE        obs_module_text("Captions.TextSource.None")
@@ -1115,16 +1119,31 @@ void DShowInput::ConfigureCaptions(obs_data_t *settings)
 	cc.textSource = obs_data_get_string(settings, CC_TEXT_SOURCE);
 	cc.clearSeconds = (int)obs_data_get_int(settings, CC_CLEAR_SECONDS);
 	cc.logRaw = obs_data_get_bool(settings, CC_LOG_RAW);
+	cc.input = (CaptionInput)obs_data_get_int(settings, CC_INPUT);
+
+	BPtr<char> dumpPath = obs_module_config_path("vbi-sample.bin");
+	if (dumpPath)
+		cc.dumpPath = (const char *)dumpPath;
 
 	captions.Configure(cc);
 
-	if (cc.enabled) {
-		device.SetCaptionCallback(
-			[this](const unsigned char *data, size_t size, long long startTime, bool hasTime) {
-				OnCaptionData(data, size, startTime, hasTime);
-			});
-	} else {
-		device.SetCaptionCallback(nullptr);
+	device.SetCaptionCallback(nullptr);
+	device.SetVbiCallback(nullptr);
+
+	if (!cc.enabled)
+		return;
+
+	/* The CC pin is always offered as a fallback: libdshowcapture only
+	 * uses it if the VBI pin isn't requested or can't be connected. */
+	device.SetCaptionCallback([this](const unsigned char *data, size_t size, long long startTime, bool hasTime) {
+		OnCaptionData(data, size, startTime, hasTime);
+	});
+
+	if (cc.input == CaptionInput::Vbi) {
+		device.SetVbiCallback([this](const unsigned char *data, size_t size, long long startTime, bool hasTime,
+					     const unsigned char *format, size_t formatSize) {
+			captions.OnVbiData(data, size, startTime, hasTime, format, formatSize);
+		});
 	}
 }
 
@@ -1183,6 +1202,7 @@ static void GetDShowDefaults(obs_data_t *settings)
 
 	obs_data_set_default_bool(settings, CC_ENABLE, true);
 	obs_data_set_default_int(settings, CC_CHANNEL, 1);
+	obs_data_set_default_int(settings, CC_INPUT, (int)CaptionInput::Vbi);
 	obs_data_set_default_string(settings, CC_TEXT_SOURCE, "");
 	obs_data_set_default_int(settings, CC_CLEAR_SECONDS, 16);
 	obs_data_set_default_bool(settings, CC_LOG_RAW, false);
@@ -1963,6 +1983,11 @@ static obs_properties_t *GetDShowProperties(void *obj)
 	obs_properties_t *ccGroup = obs_properties_create();
 
 	obs_properties_add_bool(ccGroup, CC_ENABLE, TEXT_CC_ENABLE);
+
+	p = obs_properties_add_list(ccGroup, CC_INPUT, TEXT_CC_INPUT, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, TEXT_CC_INPUT_VBI, (int)CaptionInput::Vbi);
+	obs_property_list_add_int(p, TEXT_CC_INPUT_CC, (int)CaptionInput::CcPin);
+	obs_property_set_long_description(p, obs_module_text("Captions.Input.ToolTip"));
 
 	p = obs_properties_add_list(ccGroup, CC_CHANNEL, TEXT_CC_CHANNEL, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(p, "CC1", 1);

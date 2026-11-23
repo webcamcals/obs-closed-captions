@@ -70,6 +70,16 @@ typedef std::function<void(const unsigned char *data, size_t size,
 			   long long startTime, bool hasTime)>
 	CaptionProc;
 
+/**
+ * Raw VBI callback (added for the closed caption plugin).
+ * Receives raw sampled VBI lines from the device's "VBI" pin, plus the pin's
+ * format block (normally a KS_VBIINFOHEADER).
+ */
+typedef std::function<void(const unsigned char *data, size_t size,
+			   long long startTime, bool hasTime,
+			   const unsigned char *format, size_t formatSize)>
+	VbiProc;
+
 enum class InitGraph {
 	False,
 	True,
@@ -245,6 +255,14 @@ public:
 		 * and audio capture continue without captions.
 		 */
 	void SetCaptionCallback(CaptionProc callback);
+
+	/**
+		 * Sets a callback for the video device's raw VBI pin.  Must be
+		 * called after SetVideoConfig and before ConnectFilters.  If
+		 * the VBI pin connects, the CC pin is not used; if it doesn't,
+		 * the CC pin is used instead (when a caption callback is set).
+		 */
+	void SetVbiCallback(VbiProc callback);
 
 	/**
 		 * Connects all the configured filters together.

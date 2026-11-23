@@ -34,6 +34,8 @@ target_sources(
     src/cea608-decoder.hpp
     src/caption-sink.cpp
     src/caption-sink.hpp
+    src/vbi-slicer.cpp
+    src/vbi-slicer.hpp
 )
 
 target_link_libraries(

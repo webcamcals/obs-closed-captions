@@ -12,14 +12,20 @@
 #include <util/threading.h>
 
 #include <windows.h>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 
 #define NS_PER_SEC 1000000000ULL
 #define STATS_INTERVAL_NS (30ULL * NS_PER_SEC)
 #define NO_DATA_WARNING_NS (10ULL * NS_PER_SEC)
+#define DUMP_START_TIMEOUT_NS (20ULL * NS_PER_SEC)
+#define DUMP_MAX_SAMPLES 600
 
-/* DirectShow time units (100 ns) per NTSC frame */
+/* DirectShow time units (100 ns) per NTSC frame / field */
 #define NTSC_FRAME_100NS 333667LL
+#define NTSC_FIELD_100NS 166833.5
 
 CaptionSink::CaptionSink(obs_source_t *owner_) : owner(owner_)
 {
@@ -53,6 +59,17 @@ const char *CaptionSink::Name() const
 	return obs_source_get_name(owner);
 }
 
+/* ------------------------------------------------------------------------ */
+
+void CaptionSink::ResetDecodingLocked()
+{
+	slots.clear();
+	activeKey = CC_PIN_KEY;
+	haveActive = false;
+	vbiSampleCounter = 0;
+	haveLastCcStart = false;
+}
+
 void CaptionSink::Configure(const CaptionSettings &newSettings)
 {
 	std::lock_guard<std::mutex> lock(mutex);
@@ -60,32 +77,43 @@ void CaptionSink::Configure(const CaptionSettings &newSettings)
 	/* clear whatever the old settings were publishing to */
 	if (haveLastText && (newSettings.filePath != settings.filePath ||
 			     newSettings.textSource != settings.textSource || !newSettings.enabled)) {
-		QueueJob({std::string(), settings.filePath, settings.textSource});
+		QueueJob({std::string(), settings.filePath, settings.textSource, nullptr});
 	}
 
 	settings = newSettings;
-	decoder.Reset();
-	decoder.SetChannel(settings.channel);
+	ResetDecodingLocked();
 
 	uint64_t now = os_gettime_ns();
 	lastDataTime = now;
 	lastStatsTime = now;
 	lastTickTime = now;
 	configureTime = now;
-	loggedFirstSample = false;
+	loggedFirstCc = false;
+	loggedFirstVbi = false;
 	loggedNoSamples = false;
-	haveLastSampleStart = false;
+	loggedVbiFormat = false;
+	warnedNoVbiFormat = false;
+	vbiFormatBlock.clear();
+	vbiFormat = VbiFormat();
+	dump.clear();
+	dumpSamples = 0;
+	dumpDone = false;
+	dumpStarted = false;
 	stats = Stats();
 
 	if (settings.enabled) {
 		blog(LOG_INFO,
 		     "[Closed Captions: '%s'] enabled\n"
+		     "\tinput: %s\n"
 		     "\tchannel: CC%d\n"
 		     "\ttext file: %s\n"
 		     "\ttext source: %s\n"
 		     "\tclear after: %d seconds\n"
 		     "\tlog raw data: %s",
-		     Name(), settings.channel, settings.filePath.empty() ? "(none)" : settings.filePath.c_str(),
+		     Name(),
+		     settings.input == CaptionInput::Vbi ? "VBI pin (decoded by plugin)"
+							 : "CC pin (decoded by device)",
+		     settings.channel, settings.filePath.empty() ? "(none)" : settings.filePath.c_str(),
 		     settings.textSource.empty() ? "(none)" : settings.textSource.c_str(), settings.clearSeconds,
 		     settings.logRaw ? "yes" : "no");
 
@@ -101,6 +129,108 @@ void CaptionSink::Configure(const CaptionSettings &newSettings)
 	PublishLocked(true);
 }
 
+/* ------------------------------------------------------------------------ */
+
+CaptionSink::Slot &CaptionSink::GetSlot(int key)
+{
+	std::unique_ptr<Slot> &slot = slots[key];
+	if (!slot) {
+		slot.reset(new Slot());
+		slot->decoder.SetChannel(settings.channel);
+	}
+	return *slot;
+}
+
+Cea608Decoder *CaptionSink::ActiveDecoder()
+{
+	if (!haveActive)
+		return nullptr;
+	auto it = slots.find(activeKey);
+	return it == slots.end() ? nullptr : &it->second->decoder;
+}
+
+void CaptionSink::FeedPair(int key, uint8_t b1, uint8_t b2, uint64_t now)
+{
+	Slot &slot = GetSlot(key);
+
+	/* Evidence about which field this is: CC1/CC2 live in field 1 and use
+	 * 0x14/0x1C commands; field 2 uses 0x15/0x1D commands and XDS. */
+	uint8_t c1 = b1 & 0x7F, c2 = b2 & 0x7F;
+	if (c2 >= 0x20 && c2 <= 0x2F && (c1 & 0xF7) == 0x14)
+		slot.score += 3;
+	else if (c2 >= 0x20 && c2 <= 0x2F && (c1 & 0xF7) == 0x15)
+		slot.score -= 3;
+	else if (c1 >= 0x01 && c1 <= 0x0F)
+		slot.score -= 1;
+
+	Cea608Decoder::PairResult result = slot.decoder.Decode(b1, b2);
+	slot.found++;
+	if (result != Cea608Decoder::PairResult::Padding)
+		slot.dataPairs++;
+
+	bool active = haveActive && key == activeKey;
+	if (active) {
+		stats.activePairs++;
+		if (result == Cea608Decoder::PairResult::Data || result == Cea608Decoder::PairResult::Repeat) {
+			stats.activeData++;
+			lastDataTime = now;
+		}
+		if (result == Cea608Decoder::PairResult::ParityError)
+			stats.activeParityFails++;
+	}
+
+	if (settings.logRaw && result != Cea608Decoder::PairResult::Padding && (active || key == CC_PIN_KEY)) {
+		std::string desc = Cea608Decoder::Describe(b1, b2);
+		blog(LOG_INFO, "[Closed Captions: '%s'] raw %02X %02X  %s", Name(), b1, b2, desc.c_str());
+	}
+}
+
+void CaptionSink::ChooseActiveLocked()
+{
+	int bestKey = 0;
+	Slot *best = nullptr;
+
+	for (auto &it : slots) {
+		Slot *s = it.second.get();
+		if (!best || s->score > best->score || (s->score == best->score && s->dataPairs > best->dataPairs)) {
+			best = s;
+			bestKey = it.first;
+		}
+	}
+
+	if (!best)
+		return;
+
+	if (haveActive && bestKey == activeKey)
+		return;
+
+	if (haveActive) {
+		auto cur = slots.find(activeKey);
+		if (cur != slots.end()) {
+			/* hysteresis: don't flip-flop between candidates */
+			Slot *c = cur->second.get();
+			bool clearlyBetter = best->score > c->score + 6 ||
+					     (best->score == c->score && best->dataPairs > c->dataPairs + 30);
+			if (!clearlyBetter)
+				return;
+		}
+	}
+
+	activeKey = bestKey;
+	haveActive = true;
+
+	if (bestKey == CC_PIN_KEY)
+		blog(LOG_INFO, "[Closed Captions: '%s'] reading captions from the CC pin", Name());
+	else
+		blog(LOG_INFO, "[Closed Captions: '%s'] reading captions from VBI line %d (field %c)", Name(),
+		     best->line, best->field ? 'B' : 'A');
+
+	PublishLocked(true);
+}
+
+/* ------------------------------------------------------------------------ */
+/* CC pin: byte pairs already decoded by the capture device                  */
+
 void CaptionSink::OnCaptionData(const unsigned char *data, size_t size, long long startTime, bool hasTime)
 {
 	std::lock_guard<std::mutex> lock(mutex);
@@ -110,59 +240,179 @@ void CaptionSink::OnCaptionData(const unsigned char *data, size_t size, long lon
 
 	uint64_t now = os_gettime_ns();
 
-	if (!loggedFirstSample) {
-		loggedFirstSample = true;
+	if (!loggedFirstCc) {
+		loggedFirstCc = true;
 		blog(LOG_INFO, "[Closed Captions: '%s'] receiving data from the CC pin (%u bytes per sample, %s)",
 		     Name(), (unsigned)size, hasTime ? "timestamped" : "no timestamps");
 	}
 
 	/* Detect samples the device never delivered, using timestamps. */
 	if (hasTime) {
-		if (haveLastSampleStart) {
-			long long delta = startTime - lastSampleStart;
+		if (haveLastCcStart) {
+			long long delta = startTime - lastCcStart;
 			if (delta > NTSC_FRAME_100NS * 3 / 2 && delta < NTSC_FRAME_100NS * 300) {
-				stats.gaps++;
-				stats.missedFrames += (uint64_t)((delta + NTSC_FRAME_100NS / 2) / NTSC_FRAME_100NS) - 1;
+				stats.ccGaps++;
+				stats.ccMissed += (uint64_t)((delta + NTSC_FRAME_100NS / 2) / NTSC_FRAME_100NS) - 1;
 			}
 		}
-		lastSampleStart = startTime;
-		haveLastSampleStart = true;
+		lastCcStart = startTime;
+		haveLastCcStart = true;
 	}
 
-	stats.samples++;
+	stats.ccSamples++;
 
-	for (size_t i = 0; i + 1 < size; i += 2) {
-		uint8_t b1 = data[i];
-		uint8_t b2 = data[i + 1];
-
-		Cea608Decoder::PairResult result = decoder.Decode(b1, b2);
-
-		switch (result) {
-		case Cea608Decoder::PairResult::Padding:
-			stats.padding++;
-			break;
-		case Cea608Decoder::PairResult::ParityError:
-			stats.parityErrors++;
-			break;
-		case Cea608Decoder::PairResult::OtherChannel:
-			stats.otherChannel++;
-			break;
-		case Cea608Decoder::PairResult::Repeat:
-		case Cea608Decoder::PairResult::Data:
-			stats.data++;
-			lastDataTime = now;
-			break;
-		}
-
-		if (settings.logRaw && result != Cea608Decoder::PairResult::Padding) {
-			std::string desc = Cea608Decoder::Describe(b1, b2);
-			blog(LOG_INFO, "[Closed Captions: '%s'] raw %02X %02X  %s%s", Name(), b1, b2, desc.c_str(),
-			     result == Cea608Decoder::PairResult::ParityError ? "  (parity error)" : "");
-		}
+	if (!haveActive) {
+		activeKey = CC_PIN_KEY;
+		haveActive = true;
 	}
+
+	for (size_t i = 0; i + 1 < size; i += 2)
+		FeedPair(CC_PIN_KEY, data[i], data[i + 1], now);
 
 	PublishLocked();
 }
+
+/* ------------------------------------------------------------------------ */
+/* VBI pin: raw waveforms, decoded here                                      */
+
+void CaptionSink::DumpSampleLocked(const unsigned char *data, size_t size, long long startTime, bool hasTime)
+{
+	if (dumpDone || !settings.logRaw || settings.dumpPath.empty())
+		return;
+
+	if (dump.empty()) {
+		const char magic[8] = {'V', 'B', 'I', 'D', 'U', 'M', 'P', '1'};
+		dump.insert(dump.end(), magic, magic + 8);
+		uint32_t fsize = (uint32_t)vbiFormatBlock.size();
+		dump.insert(dump.end(), (unsigned char *)&fsize, (unsigned char *)&fsize + 4);
+		dump.insert(dump.end(), vbiFormatBlock.begin(), vbiFormatBlock.end());
+	}
+
+	int64_t ts = startTime;
+	uint8_t ht = hasTime ? 1 : 0;
+	uint32_t sz = (uint32_t)size;
+	dump.insert(dump.end(), (unsigned char *)&ts, (unsigned char *)&ts + 8);
+	dump.push_back(ht);
+	dump.insert(dump.end(), (unsigned char *)&sz, (unsigned char *)&sz + 4);
+	dump.insert(dump.end(), data, data + size);
+
+	if (++dumpSamples >= DUMP_MAX_SAMPLES) {
+		dumpDone = true;
+		auto shared = std::make_shared<std::vector<unsigned char>>(std::move(dump));
+		dump.clear();
+		Job job;
+		job.filePath = settings.dumpPath;
+		job.dumpData = shared;
+		QueueJob(std::move(job));
+	}
+}
+
+void CaptionSink::OnVbiData(const unsigned char *data, size_t size, long long startTime, bool hasTime,
+			    const unsigned char *format, size_t formatSize)
+{
+	std::lock_guard<std::mutex> lock(mutex);
+
+	if (!settings.enabled)
+		return;
+
+	uint64_t now = os_gettime_ns();
+
+	if (formatSize && (vbiFormatBlock.size() != formatSize ||
+			   memcmp(vbiFormatBlock.data(), format, formatSize) != 0)) {
+		vbiFormatBlock.assign(format, format + formatSize);
+		vbiFormat = VbiFormat::Parse(format, formatSize);
+		slicer.Configure(vbiFormat);
+		loggedVbiFormat = false;
+	}
+
+	if (!loggedFirstVbi) {
+		loggedFirstVbi = true;
+		blog(LOG_INFO, "[Closed Captions: '%s'] receiving raw VBI from the VBI pin (%u bytes per sample, %s)",
+		     Name(), (unsigned)size, hasTime ? "timestamped" : "no timestamps");
+	}
+
+	VbiFormat fmt = vbiFormat;
+	if (!fmt.valid) {
+		/* No usable format block: guess the common layouts. */
+		uint32_t guess = (size % 1440 == 0) ? 1440 : (size % 720 == 0) ? 720 : 0;
+		if (!warnedNoVbiFormat) {
+			warnedNoVbiFormat = true;
+			blog(LOG_WARNING,
+			     "[Closed Captions: '%s'] the VBI pin did not describe its format (%u-byte format "
+			     "block); guessing %u samples per line",
+			     Name(), (unsigned)formatSize, guess);
+		}
+		if (!guess)
+			return;
+		fmt.samplesPerLine = fmt.strideInBytes = guess;
+		fmt.samplingFrequency = guess == 1440 ? 27000000 : 13500000;
+		fmt.startLine = 10;
+		fmt.endLine = 21;
+		fmt.valid = true;
+		slicer.Configure(fmt);
+	}
+
+	if (!loggedVbiFormat) {
+		loggedVbiFormat = true;
+		blog(LOG_INFO, "[Closed Captions: '%s'] VBI format: %s (%.1f samples per caption bit)", Name(),
+		     fmt.Describe().c_str(), slicer.SamplesPerBit());
+	}
+
+	stats.vbiSamples++;
+
+	bool anyRunIn = false;
+
+	size_t stride = fmt.strideInBytes;
+	size_t rows = stride ? size / stride : 0;
+	size_t perField = fmt.endLine - fmt.startLine + 1;
+	bool twoFields = rows >= 2 * perField;
+
+	int parity;
+	if (hasTime)
+		parity = (int)(std::llround((double)startTime / NTSC_FIELD_100NS) & 1);
+	else
+		parity = (int)(vbiSampleCounter & 1);
+	vbiSampleCounter++;
+
+	size_t lineSamples = std::min<size_t>(fmt.samplesPerLine, stride);
+
+	for (size_t row = 0; row < rows; row++) {
+		Line21Slicer::Result res = slicer.SliceLine(data + row * stride, lineSamples);
+		if (!res.runIn)
+			continue;
+
+		anyRunIn = true;
+		stats.vbiLinesWithCc++;
+
+		int field = twoFields ? (row >= rows / 2 ? 1 : 0) : parity;
+		int key = (int)row * 2 + (twoFields ? 0 : parity);
+
+		Slot &slot = GetSlot(key);
+		slot.line = (int)fmt.startLine + (int)(twoFields ? row % perField : row);
+		slot.field = field;
+
+		if (!res.valid) {
+			slot.runInNoParity++;
+			if (haveActive && key == activeKey)
+				stats.activeParityFails++;
+			continue;
+		}
+
+		FeedPair(key, res.b1, res.b2, now);
+	}
+
+	if (!dumpStarted && settings.logRaw && (anyRunIn || now - configureTime > DUMP_START_TIMEOUT_NS)) {
+		dumpStarted = true;
+		blog(LOG_INFO, "[Closed Captions: '%s'] saving a raw VBI sample for troubleshooting...", Name());
+	}
+	if (dumpStarted)
+		DumpSampleLocked(data, size, startTime, hasTime);
+
+	ChooseActiveLocked();
+	PublishLocked();
+}
+
+/* ------------------------------------------------------------------------ */
 
 void CaptionSink::Tick()
 {
@@ -180,18 +430,19 @@ void CaptionSink::Tick()
 		return;
 	lastTickTime = now;
 
-	if (!loggedFirstSample && !loggedNoSamples && now - configureTime > NO_DATA_WARNING_NS) {
+	if (!loggedFirstCc && !loggedFirstVbi && !loggedNoSamples && now - configureTime > NO_DATA_WARNING_NS) {
 		loggedNoSamples = true;
 		blog(LOG_WARNING,
-		     "[Closed Captions: '%s'] video is arriving, but no data has come from the "
-		     "device's CC pin in 10 seconds. Look above for lines starting with "
+		     "[Closed Captions: '%s'] video is arriving, but no caption data has come from the "
+		     "device in 10 seconds. Look above for lines starting with "
 		     "'DShow: Closed captions' for details.",
 		     Name());
 	}
 
-	if (settings.clearSeconds > 0 && !decoder.DisplayedIsEmpty() &&
+	Cea608Decoder *dec = ActiveDecoder();
+	if (dec && settings.clearSeconds > 0 && !dec->DisplayedIsEmpty() &&
 	    now - lastDataTime > (uint64_t)settings.clearSeconds * NS_PER_SEC) {
-		decoder.EraseDisplayed();
+		dec->EraseDisplayed();
 		PublishLocked();
 	}
 
@@ -202,8 +453,7 @@ void CaptionSink::Tick()
 void CaptionSink::Clear()
 {
 	std::lock_guard<std::mutex> lock(mutex);
-	decoder.Reset();
-	haveLastSampleStart = false;
+	ResetDecodingLocked();
 	PublishLocked();
 }
 
@@ -211,33 +461,68 @@ void CaptionSink::LogStatsLocked(uint64_t now)
 {
 	lastStatsTime = now;
 
-	if (!stats.samples) {
+	if (!stats.ccSamples && !stats.vbiSamples) {
 		stats = Stats();
 		return;
 	}
 
-	std::string current = decoder.DisplayedText();
+	Cea608Decoder *dec = ActiveDecoder();
+	std::string current = dec ? dec->DisplayedText() : std::string();
 	for (char &c : current)
 		if (c == '\n')
 			c = '|';
 
-	double pct = stats.videoFrames ? 100.0 * (double)stats.samples / (double)stats.videoFrames : 0.0;
+	if (stats.vbiSamples) {
+		std::string where = "none yet";
+		if (haveActive && activeKey != CC_PIN_KEY) {
+			auto it = slots.find(activeKey);
+			if (it != slots.end()) {
+				char buf[64];
+				snprintf(buf, sizeof(buf), "line %d field %c", it->second->line,
+					 it->second->field ? 'B' : 'A');
+				where = buf;
+			}
+		}
 
-	blog(LOG_INFO,
-	     "[Closed Captions: '%s'] last 30s: %llu video frames, %llu CC samples (%.1f%%), "
-	     "%llu gaps (~%llu samples missed), %llu caption pairs, %llu other-channel pairs, "
-	     "%llu empty pairs, %llu parity errors. On screen now: \"%s\"",
-	     Name(), (unsigned long long)stats.videoFrames, (unsigned long long)stats.samples, pct,
-	     (unsigned long long)stats.gaps, (unsigned long long)stats.missedFrames,
-	     (unsigned long long)stats.data, (unsigned long long)stats.otherChannel,
-	     (unsigned long long)stats.padding, (unsigned long long)stats.parityErrors, current.c_str());
+		blog(LOG_INFO,
+		     "[Closed Captions: '%s'] last 30s: %llu video frames, %llu VBI samples, %llu lines with a "
+		     "caption signal. Reading %s: %llu pairs decoded, %llu unreadable (parity), %llu caption "
+		     "pairs. On screen now: \"%s\"",
+		     Name(), (unsigned long long)stats.videoFrames, (unsigned long long)stats.vbiSamples,
+		     (unsigned long long)stats.vbiLinesWithCc, where.c_str(), (unsigned long long)stats.activePairs,
+		     (unsigned long long)stats.activeParityFails, (unsigned long long)stats.activeData,
+		     current.c_str());
+
+		if (settings.logRaw) {
+			for (auto &it : slots) {
+				if (it.first == CC_PIN_KEY)
+					continue;
+				Slot *s = it.second.get();
+				blog(LOG_INFO,
+				     "[Closed Captions: '%s']   VBI line %d field %c: score %lld, %llu decoded, "
+				     "%llu with data, %llu unreadable",
+				     Name(), s->line, s->field ? 'B' : 'A', (long long)s->score,
+				     (unsigned long long)s->found, (unsigned long long)s->dataPairs,
+				     (unsigned long long)s->runInNoParity);
+			}
+		}
+	} else {
+		double pct = stats.videoFrames ? 100.0 * (double)stats.ccSamples / (double)stats.videoFrames : 0.0;
+		blog(LOG_INFO,
+		     "[Closed Captions: '%s'] last 30s: %llu video frames, %llu CC samples (%.1f%%), "
+		     "%llu gaps (~%llu samples missed), %llu caption pairs. On screen now: \"%s\"",
+		     Name(), (unsigned long long)stats.videoFrames, (unsigned long long)stats.ccSamples, pct,
+		     (unsigned long long)stats.ccGaps, (unsigned long long)stats.ccMissed,
+		     (unsigned long long)stats.activeData, current.c_str());
+	}
 
 	stats = Stats();
 }
 
 void CaptionSink::PublishLocked(bool force)
 {
-	std::string text = settings.enabled ? decoder.DisplayedText() : std::string();
+	Cea608Decoder *dec = ActiveDecoder();
+	std::string text = (settings.enabled && dec) ? dec->DisplayedText() : std::string();
 
 	if (!force && haveLastText && text == lastText)
 		return;
@@ -248,12 +533,12 @@ void CaptionSink::PublishLocked(bool force)
 	if (settings.filePath.empty() && settings.textSource.empty())
 		return;
 
-	QueueJob({text, settings.filePath, settings.textSource});
+	QueueJob({text, settings.filePath, settings.textSource, nullptr});
 }
 
 /* ------------------------------------------------------------------------ */
 /* Output worker: file writes and text source updates happen here, never on  */
-/* the capture thread.                                                       */
+/* the capture threads.                                                      */
 
 void CaptionSink::QueueJob(Job job)
 {
@@ -278,13 +563,20 @@ void CaptionSink::WorkerLoop()
 			batch.swap(jobs);
 		}
 
-		/* If several updates piled up, only the newest one for each
-		 * destination matters. */
 		for (size_t i = 0; i < batch.size(); i++) {
 			const Job &job = batch[i];
+
+			if (job.dumpData) {
+				WriteDump(job.filePath, *job.dumpData);
+				continue;
+			}
+
+			/* If several updates piled up, only the newest one for
+			 * each destination matters. */
 			bool superseded = false;
 			for (size_t j = i + 1; j < batch.size(); j++) {
-				if (batch[j].filePath == job.filePath && batch[j].textSource == job.textSource) {
+				if (!batch[j].dumpData && batch[j].filePath == job.filePath &&
+				    batch[j].textSource == job.textSource) {
 					superseded = true;
 					break;
 				}
@@ -300,19 +592,24 @@ void CaptionSink::WorkerLoop()
 	}
 }
 
-static bool WriteAll(const wchar_t *path, const std::string &text)
+static bool WriteAll(const wchar_t *path, const void *data, size_t size)
 {
 	HANDLE file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
 				  FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (file == INVALID_HANDLE_VALUE)
 		return false;
 
-	DWORD written = 0;
-	BOOL ok = TRUE;
-	if (!text.empty())
-		ok = WriteFile(file, text.data(), (DWORD)text.size(), &written, nullptr);
+	bool ok = true;
+	const unsigned char *p = (const unsigned char *)data;
+	while (size > 0 && ok) {
+		DWORD chunk = (DWORD)std::min<size_t>(size, (size_t)1 << 20);
+		DWORD written = 0;
+		ok = WriteFile(file, p, chunk, &written, nullptr) && written == chunk;
+		p += chunk;
+		size -= chunk;
+	}
 	CloseHandle(file);
-	return ok && written == (DWORD)text.size();
+	return ok;
 }
 
 void CaptionSink::WriteCaptionFile(const std::string &path, const std::string &text)
@@ -329,7 +626,7 @@ void CaptionSink::WriteCaptionFile(const std::string &path, const std::string &t
 	 * half-written file.  If the swap fails (e.g. the file is open in
 	 * another program at that instant), overwrite it directly. */
 	bool ok = false;
-	if (WriteAll(temp.c_str(), text)) {
+	if (WriteAll(temp.c_str(), text.data(), text.size())) {
 		for (int attempt = 0; attempt < 5 && !ok; attempt++) {
 			ok = MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
 			if (!ok)
@@ -340,7 +637,7 @@ void CaptionSink::WriteCaptionFile(const std::string &path, const std::string &t
 	}
 
 	if (!ok)
-		ok = WriteAll(target.c_str(), text);
+		ok = WriteAll(target.c_str(), text.data(), text.size());
 
 	static bool warned = false;
 	if (!ok && !warned) {
@@ -348,6 +645,25 @@ void CaptionSink::WriteCaptionFile(const std::string &path, const std::string &t
 		blog(LOG_WARNING, "[Closed Captions] could not write caption file '%s' (error %lu)", path.c_str(),
 		     GetLastError());
 	}
+}
+
+void CaptionSink::WriteDump(const std::string &path, const std::vector<unsigned char> &data)
+{
+	std::string dir = path;
+	size_t slash = dir.find_last_of("/\\");
+	if (slash != std::string::npos) {
+		dir.resize(slash);
+		os_mkdirs(dir.c_str());
+	}
+
+	wchar_t *wpath = nullptr;
+	if (!os_utf8_to_wcs_ptr(path.c_str(), path.size(), &wpath) || !wpath)
+		return;
+	bool ok = WriteAll(wpath, data.data(), data.size());
+	bfree(wpath);
+
+	blog(ok ? LOG_INFO : LOG_WARNING, "[Closed Captions] %s raw VBI sample (%u KB) to '%s'",
+	     ok ? "saved" : "FAILED to save", (unsigned)(data.size() / 1024), path.c_str());
 }
 
 void CaptionSink::UpdateTextSource(const std::string &name, const std::string &text)
