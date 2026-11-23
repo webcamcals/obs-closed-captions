@@ -5,6 +5,10 @@
  * (at your option) any later version.
  */
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "caption-sink.hpp"
 
 #include <util/platform.h>
