@@ -41,8 +41,20 @@ In addition to the standard Video Source options, the **Video Capture Device (wi
 - **Text file contents**: *Overwrite* or *Append*. Overwrite replaces the entire document with only the text that is currently being shown on-screen, and empties it when there is none. Append writes each new line to the bottom row of the text file, which can be useful for archival purposes. If you are displaying a text file in OBS with Append mode, I recommend enabling ‘Chatlog Mode’ in the Text Source Properties window to set how many of the most recent lines to show.
 - **Troubleshooting**: keeps more detailed logs for troubleshooting purposes.
 
-## Closed Captions?
+<img width="2545" height="1204" alt="image" src="https://github.com/user-attachments/assets/f9393e97-aaf7-43ef-8393-187d0766e66d" />
+
+## About Closed Captions
 I recommend [Technology Connections' video explaining how Closed Captions work](https://www.youtube.com/watch?v=6SL6zs2bDks). You can expect to find closed captions in professionally-released movies, and amateur recordings of broadcast TV. Some DVDs have closed captions in addition to digital subtitles, but not all. Laser Discs probably have them, too, if you swing that way.
+
+## Scene Collection Converter (Optional)
+
+<img width="713" height="635" alt="image" src="https://github.com/user-attachments/assets/4146b9a8-cc9f-4b2d-873b-a1f798ad3aad" />
+
+In addition to the `.zip` file containing the plugin, there is also a file called `convert-scene-collection.html`.
+
+I personally already had a very complicated setup for analog video source in OBS: many many filters for video and audio, some of which were controlled by my StreamDeck device and Streamer.bot Actions, associated with Twitch Viewer Point Rewards, etc. This plugin had to be designed as a separate kind of source that accesses the audio/video capture device while *also* reading the closed captions, because devices can't be shared between two sources. Alas, OBS does not let you ‘swap’ a source of one type for a source of another while keeping everything intact. So I've provided this tool for people like me, for whom it would be a massive pain to remake your source from scratch and update all of the references.
+
+If that applies to you, you can download this HTML file and open it in your browser. You can point it to your OBS scene collection `.json` file, and it will allow you to swap sources of your choice to (and from) the new type of Video Capture Device source with Closed Captions. If you don't have a complicated setup for your video capture device source, don't worry about it.
 
 ## AI Disclosure
 
