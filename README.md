@@ -1,6 +1,7 @@
 # Closed Caption Capture for OBS
 
-<img width="1280" height="640" alt="image" src="https://github.com/user-attachments/assets/a9f06b4b-3795-422e-b5a7-b7a735927c6d" />
+<img width="1280" height="640" alt="image" src="https://github.com/user-attachments/assets/8617391d-88cd-46f7-a478-74d3b60f5568" />
+
 
 This plugin for OBS Studio decodes closed captions in a digitized analog video signal, and lets you display them in an OBS Text Source and/or write the closed captions to a txt file.
 
