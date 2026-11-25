@@ -107,7 +107,6 @@ private:
 	uint64_t fieldIndex = 0;
 	long long lastVbiStart = 0;
 	bool haveLastVbiStart = false;
-	int steadyFieldDeltas = 0;
 	bool loggedVbiFormat = false;
 	bool warnedNoVbiFormat = false;
 
@@ -142,7 +141,6 @@ private:
 		uint64_t activePairs = 0;
 		uint64_t activeParityFails = 0;
 		uint64_t activeData = 0;
-		uint64_t vbiMissedFields = 0;
 		long long vbiDeltaMin = LLONG_MAX;
 		long long vbiDeltaMax = LLONG_MIN;
 	} stats;

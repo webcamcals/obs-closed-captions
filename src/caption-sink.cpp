@@ -33,11 +33,10 @@
 #define SCORE_HALF_LIFE_NS (4ULL * NS_PER_SEC)
 #define SCORE_MAX 60.0
 #define SWITCH_MARGIN 6.0
-#define ACTIVE_STALE_NS (NS_PER_SEC)
+#define ACTIVE_STALE_NS (NS_PER_SEC * 3 / 10)
 
 /* DirectShow time units (100 ns) per NTSC frame / field */
 #define NTSC_FRAME_100NS 333667LL
-#define NTSC_FIELD_100NS 166833.5
 
 CaptionSink::CaptionSink(obs_source_t *owner_) : owner(owner_)
 {
@@ -82,7 +81,6 @@ void CaptionSink::ResetDecodingLocked()
 	vbiSampleCounter = 0;
 	fieldIndex = 0;
 	haveLastVbiStart = false;
-	steadyFieldDeltas = 0;
 	haveLastCcStart = false;
 }
 
@@ -184,15 +182,18 @@ void CaptionSink::FeedPair(int key, uint8_t b1, uint8_t b2, uint64_t now)
 	/* Evidence about which field this is: CC1/CC2 live in field 1 and use
 	 * 0x14/0x1C commands; field 2 uses 0x15/0x1D commands and XDS. */
 	uint8_t c1 = b1 & 0x7F, c2 = b2 & 0x7F;
-	double delta = 0.0;
-	if (c2 >= 0x20 && c2 <= 0x2F && (c1 & 0xF7) == 0x14)
-		delta = 3.0;
-	else if (c2 >= 0x20 && c2 <= 0x2F && (c1 & 0xF7) == 0x15)
-		delta = -3.0;
-	else if (c1 >= 0x01 && c1 <= 0x0F)
-		delta = -1.0;
-	if (delta != 0.0) {
-		slot.score = std::max(-SCORE_MAX, std::min(SCORE_MAX, EffectiveScore(slot, now) + delta));
+	bool field1Code = c2 >= 0x20 && c2 <= 0x2F && (c1 & 0xF7) == 0x14;
+	bool field2Code = (c2 >= 0x20 && c2 <= 0x2F && (c1 & 0xF7) == 0x15) || (c1 >= 0x01 && c1 <= 0x0F);
+	if (field1Code || field2Code) {
+		double score = EffectiveScore(slot, now);
+		/* Field 2 codes never appear in field 1, so one of them is proof
+		 * this isn't (or is no longer) the CC1/CC2 field: drop its trust
+		 * at once instead of letting it fade. */
+		if (field1Code)
+			score = std::max(score, 0.0) + 3.0;
+		else
+			score = std::min(score, 0.0) - 3.0;
+		slot.score = std::max(-SCORE_MAX, std::min(SCORE_MAX, score));
 		slot.scoreTime = now;
 	}
 
@@ -431,30 +432,16 @@ void CaptionSink::OnVbiData(const unsigned char *data, size_t size, long long st
 	bool twoFields = rows >= 2 * perField;
 
 	/* Which field is this?  Fields strictly alternate, so toggle on every
-	 * sample.  Only use timestamps to notice dropped fields, and only once
-	 * they've proven to tick steadily at one field period. (Absolute
-	 * timestamps can sit halfway between field boundaries, so rounding
-	 * them is not reliable.) */
-	if (vbiSampleCounter > 0) {
+	 * sample.  Timestamps are not used: on some devices they arrive in
+	 * bursts and don't reflect field timing at all.  If the order ever
+	 * slips (e.g. when a VCR stops), ChooseActiveLocked() re-locks onto
+	 * whichever field is carrying CC1/CC2. */
+	if (vbiSampleCounter > 0)
 		fieldIndex++;
-		if (hasTime && haveLastVbiStart) {
-			long long delta = startTime - lastVbiStart;
-			stats.vbiDeltaMin = std::min(stats.vbiDeltaMin, delta);
-			stats.vbiDeltaMax = std::max(stats.vbiDeltaMax, delta);
-
-			bool oneField = delta > NTSC_FIELD_100NS * 0.8 && delta < NTSC_FIELD_100NS * 1.2;
-			if (oneField) {
-				if (steadyFieldDeltas < 1000)
-					steadyFieldDeltas++;
-			} else if (steadyFieldDeltas >= 30 && delta > NTSC_FIELD_100NS * 1.5 &&
-				   delta < NTSC_FIELD_100NS * 600) {
-				long long missed = std::llround((double)delta / NTSC_FIELD_100NS) - 1;
-				fieldIndex += (uint64_t)missed;
-				stats.vbiMissedFields += (uint64_t)missed;
-			} else {
-				steadyFieldDeltas = 0;
-			}
-		}
+	if (hasTime && haveLastVbiStart) {
+		long long delta = startTime - lastVbiStart;
+		stats.vbiDeltaMin = std::min(stats.vbiDeltaMin, delta);
+		stats.vbiDeltaMax = std::max(stats.vbiDeltaMax, delta);
 	}
 	if (hasTime) {
 		lastVbiStart = startTime;
@@ -576,13 +563,12 @@ void CaptionSink::LogStatsLocked(uint64_t now)
 		blog(LOG_INFO,
 		     "[Closed Captions: '%s'] last 30s: %llu video frames, %llu VBI samples, %llu lines with a "
 		     "caption signal. Reading %s: %llu pairs decoded, %llu unreadable (parity), %llu caption "
-		     "pairs. Timestamp steps %lld-%lld, %llu fields dropped. On screen now: \"%s\"",
+		     "pairs. Timestamp steps %lld-%lld. On screen now: \"%s\"",
 		     Name(), (unsigned long long)stats.videoFrames, (unsigned long long)stats.vbiSamples,
 		     (unsigned long long)stats.vbiLinesWithCc, where.c_str(), (unsigned long long)stats.activePairs,
 		     (unsigned long long)stats.activeParityFails, (unsigned long long)stats.activeData,
 		     stats.vbiDeltaMin == LLONG_MAX ? 0LL : stats.vbiDeltaMin,
-		     stats.vbiDeltaMax == LLONG_MIN ? 0LL : stats.vbiDeltaMax,
-		     (unsigned long long)stats.vbiMissedFields, current.c_str());
+		     stats.vbiDeltaMax == LLONG_MIN ? 0LL : stats.vbiDeltaMax, current.c_str());
 
 		if (settings.logRaw) {
 			for (auto &it : slots) {
